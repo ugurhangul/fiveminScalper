@@ -45,10 +45,14 @@ input bool     ExportCandleData = false;       // Export candle data to CSV for 
 input group "=== Debug Settings ==="
 input bool     LogActiveTradesEvery5Min = true; // Log all active trades every 5-min candle
 
+input group "=== Symbol-Specific Optimization ==="
+input bool     UseSymbolSpecificSettings = true; // Auto-adjust parameters based on symbol
+input string   ManualSymbolCategory = "AUTO";    // Manual override: AUTO, MAJOR_FOREX, MINOR_FOREX, METALS, INDICES, CRYPTO
+
 input group "=== Adaptive Filter System ==="
 input bool     UseAdaptiveFilters = true;       // Enable adaptive filter system
-input int      AdaptiveLossTrigger = 3;         // Consecutive losses to activate filters
-input int      AdaptiveWinRecovery = 2;         // Consecutive wins to deactivate filters
+input int      AdaptiveLossTrigger = 3;         // Consecutive losses to activate filters (auto-adjusted per symbol)
+input int      AdaptiveWinRecovery = 2;         // Consecutive wins to deactivate filters (auto-adjusted per symbol)
 input bool     StartWithFiltersEnabled = false; // Start with filters enabled (true) or disabled (false)
 
 input group "=== Volume Confirmation ==="
@@ -72,6 +76,43 @@ input color    ColorBuyEntry = clrLime;        // Buy entry line color
 input color    ColorSellEntry = clrRed;        // Sell entry line color
 input int      LineWidth = 2;                  // Line width
 input ENUM_LINE_STYLE LineStyle = STYLE_SOLID; // Line style
+
+//+------------------------------------------------------------------+
+//| Symbol Category Enumeration                                       |
+//+------------------------------------------------------------------+
+enum ENUM_SYMBOL_CATEGORY
+{
+   SYMBOL_MAJOR_FOREX,    // Major Forex Pairs (EUR/USD, GBP/USD, USD/JPY, etc.)
+   SYMBOL_MINOR_FOREX,    // Minor Forex Pairs (EUR/GBP, AUD/NZD, etc.)
+   SYMBOL_EXOTIC_FOREX,   // Exotic Forex Pairs (USD/TRY, EUR/ZAR, etc.)
+   SYMBOL_METALS,         // Precious Metals (Gold, Silver, etc.)
+   SYMBOL_INDICES,        // Stock Indices (S&P500, NASDAQ, DAX, etc.)
+   SYMBOL_CRYPTO,         // Cryptocurrencies (BTC/USD, ETH/USD, etc.)
+   SYMBOL_COMMODITIES,    // Commodities (Oil, Gas, etc.)
+   SYMBOL_UNKNOWN         // Unknown/Unclassified
+};
+
+//+------------------------------------------------------------------+
+//| Symbol-Specific Parameter Set                                     |
+//+------------------------------------------------------------------+
+struct SymbolParameters
+{
+   // Volume parameters
+   double breakoutVolumeMax;      // Max volume multiplier for breakout
+   double reversalVolumeMin;      // Min volume multiplier for reversal
+   int    volumeAveragePeriod;    // Volume average period
+
+   // Divergence parameters
+   int    rsiPeriod;              // RSI period
+   int    macdFast;               // MACD fast EMA
+   int    macdSlow;               // MACD slow EMA
+   int    macdSignal;             // MACD signal
+   int    divergenceLookback;     // Divergence lookback period
+
+   // Adaptive trigger parameters
+   int    adaptiveLossTrigger;    // Losses to activate filters
+   int    adaptiveWinRecovery;    // Wins to deactivate filters
+};
 
 //--- Global Variables
 datetime g_last4HCandleTime = 0;               // Last processed 4H candle time (for trading)
@@ -124,6 +165,11 @@ ulong    g_lastClosedTicket = 0;               // Last closed trade ticket (to a
 // Working filter variables (can be modified by adaptive system)
 bool     g_activeVolumeConfirmation = false;   // Current active volume confirmation setting
 bool     g_activeDivergenceConfirmation = false; // Current active divergence confirmation setting
+
+// Symbol-specific optimization
+ENUM_SYMBOL_CATEGORY g_symbolCategory = SYMBOL_UNKNOWN; // Detected symbol category
+SymbolParameters     g_symbolParams;           // Active symbol-specific parameters
+SymbolParameters     g_defaultParams;          // Default parameters from inputs
 
 // Breakeven tracking to prevent redundant checks
 ulong    g_breakevenSetTickets[];              // Array of tickets that already have breakeven set
@@ -261,19 +307,48 @@ int OnInit()
    LogMessage("  Max Lot: " + DoubleToString(g_symbolMaxLot, 2));
    LogMessage("  Lot Step: " + DoubleToString(g_symbolLotStep, 2));
 
-   // Initialize RSI and MACD indicators (always needed for adaptive system)
-   LogMessage("Initializing divergence indicators...");
+   // Store default parameters from inputs
+   g_defaultParams.breakoutVolumeMax = BreakoutVolumeMaxMultiplier;
+   g_defaultParams.reversalVolumeMin = ReversalVolumeMinMultiplier;
+   g_defaultParams.volumeAveragePeriod = VolumeAveragePeriod;
+   g_defaultParams.rsiPeriod = RSI_Period;
+   g_defaultParams.macdFast = MACD_Fast;
+   g_defaultParams.macdSlow = MACD_Slow;
+   g_defaultParams.macdSignal = MACD_Signal;
+   g_defaultParams.divergenceLookback = DivergenceLookback;
+   g_defaultParams.adaptiveLossTrigger = AdaptiveLossTrigger;
+   g_defaultParams.adaptiveWinRecovery = AdaptiveWinRecovery;
 
-   // Create RSI indicator on 5-minute timeframe
-   g_rsiHandle = iRSI(_Symbol, PERIOD_M5, RSI_Period, PRICE_CLOSE);
+   // Apply symbol-specific parameters (or use defaults if disabled)
+   ApplySymbolParameters();
+
+   // Use symbol-specific parameters if enabled, otherwise use defaults
+   if(UseSymbolSpecificSettings)
+   {
+      // Symbol-specific parameters are now active in g_symbolParams
+      LogMessage("Using symbol-specific optimized parameters");
+   }
+   else
+   {
+      // Copy default parameters to symbol parameters
+      g_symbolParams = g_defaultParams;
+      LogMessage("Using default input parameters (symbol-specific optimization disabled)");
+   }
+
+   // Initialize RSI and MACD indicators (always needed for adaptive system)
+   // Use symbol-specific parameters for indicator initialization
+   LogMessage("Initializing divergence indicators with symbol-specific parameters...");
+
+   // Create RSI indicator on 5-minute timeframe using symbol-specific period
+   g_rsiHandle = iRSI(_Symbol, PERIOD_M5, g_symbolParams.rsiPeriod, PRICE_CLOSE);
    if(g_rsiHandle == INVALID_HANDLE)
    {
       LogMessage("ERROR: Failed to create RSI indicator");
       return(INIT_FAILED);
    }
 
-   // Create MACD indicator on 5-minute timeframe
-   g_macdHandle = iMACD(_Symbol, PERIOD_M5, MACD_Fast, MACD_Slow, MACD_Signal, PRICE_CLOSE);
+   // Create MACD indicator on 5-minute timeframe using symbol-specific parameters
+   g_macdHandle = iMACD(_Symbol, PERIOD_M5, g_symbolParams.macdFast, g_symbolParams.macdSlow, g_symbolParams.macdSignal, PRICE_CLOSE);
    if(g_macdHandle == INVALID_HANDLE)
    {
       LogMessage("ERROR: Failed to create MACD indicator");
@@ -281,9 +356,9 @@ int OnInit()
    }
 
    LogMessage("Divergence indicators initialized successfully");
-   LogMessage("  RSI Period: " + IntegerToString(RSI_Period));
-   LogMessage("  MACD: " + IntegerToString(MACD_Fast) + ", " + IntegerToString(MACD_Slow) + ", " + IntegerToString(MACD_Signal));
-   LogMessage("  Divergence Lookback: " + IntegerToString(DivergenceLookback) + " candles");
+   LogMessage("  RSI Period: " + IntegerToString(g_symbolParams.rsiPeriod));
+   LogMessage("  MACD: " + IntegerToString(g_symbolParams.macdFast) + ", " + IntegerToString(g_symbolParams.macdSlow) + ", " + IntegerToString(g_symbolParams.macdSignal));
+   LogMessage("  Divergence Lookback: " + IntegerToString(g_symbolParams.divergenceLookback) + " candles");
    LogMessage("  Require Both Indicators: " + (RequireBothIndicators ? "Yes" : "No"));
 
    // Initialize filter settings for adaptive system
@@ -296,8 +371,8 @@ int OnInit()
    if(UseAdaptiveFilters)
    {
       LogMessage("Adaptive Filter System: ENABLED");
-      LogMessage("  Loss Trigger: " + IntegerToString(AdaptiveLossTrigger) + " consecutive losses");
-      LogMessage("  Win Recovery: " + IntegerToString(AdaptiveWinRecovery) + " consecutive wins");
+      LogMessage("  Loss Trigger: " + IntegerToString(g_symbolParams.adaptiveLossTrigger) + " consecutive losses (symbol-optimized)");
+      LogMessage("  Win Recovery: " + IntegerToString(g_symbolParams.adaptiveWinRecovery) + " consecutive wins (symbol-optimized)");
       LogMessage("  Starting State: Filters " + (StartWithFiltersEnabled ? "ENABLED" : "DISABLED"));
       LogMessage("  When filters activate: Volume AND Divergence confirmation required");
       LogMessage("  When filters deactivate: Return to starting state (" + (StartWithFiltersEnabled ? "Enabled" : "Disabled") + ")");
@@ -895,11 +970,12 @@ void MonitorEntries()
             // Get volume of the breakout candle (index 1 = last closed candle)
             g_buyBreakoutVolume = GetCandleVolume(1);
 
-            // Calculate average volume
-            g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
+            // Calculate average volume using symbol-specific period
+            g_averageVolume = CalculateAverageVolume(g_symbolParams.volumeAveragePeriod);
 
             // Check if breakout volume is LOW (weak breakout = good for false breakout strategy)
-            g_buyBreakoutVolumeOK = IsBreakoutVolumeLow(g_buyBreakoutVolume, g_averageVolume, BreakoutVolumeMaxMultiplier);
+            // Use symbol-specific threshold
+            g_buyBreakoutVolumeOK = IsBreakoutVolumeLow(g_buyBreakoutVolume, g_averageVolume, g_symbolParams.breakoutVolumeMax);
 
             volumeOK = g_buyBreakoutVolumeOK;
          }
@@ -1007,11 +1083,12 @@ void MonitorEntries()
             // Reuse average volume if already calculated, otherwise calculate it
             if(g_averageVolume <= 0)
             {
-               g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
+               g_averageVolume = CalculateAverageVolume(g_symbolParams.volumeAveragePeriod);
             }
 
             // Check if reversal volume is HIGH (strong reversal = good confirmation)
-            g_buyReversalVolumeOK = IsReversalVolumeHigh(g_buyReversalVolume, g_averageVolume, ReversalVolumeMinMultiplier);
+            // Use symbol-specific threshold
+            g_buyReversalVolumeOK = IsReversalVolumeHigh(g_buyReversalVolume, g_averageVolume, g_symbolParams.reversalVolumeMin);
 
             reversalVolumeOK = g_buyReversalVolumeOK;
          }
@@ -1125,11 +1202,12 @@ void MonitorEntries()
             // Calculate average volume (reuse if already calculated for BUY check)
             if(g_averageVolume <= 0)
             {
-               g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
+               g_averageVolume = CalculateAverageVolume(g_symbolParams.volumeAveragePeriod);
             }
 
             // Check if breakout volume is LOW (weak breakout = good for false breakout strategy)
-            g_sellBreakoutVolumeOK = IsBreakoutVolumeLow(g_sellBreakoutVolume, g_averageVolume, BreakoutVolumeMaxMultiplier);
+            // Use symbol-specific threshold
+            g_sellBreakoutVolumeOK = IsBreakoutVolumeLow(g_sellBreakoutVolume, g_averageVolume, g_symbolParams.breakoutVolumeMax);
 
             volumeOK = g_sellBreakoutVolumeOK;
          }
@@ -1237,11 +1315,12 @@ void MonitorEntries()
             // Reuse average volume if already calculated, otherwise calculate it
             if(g_averageVolume <= 0)
             {
-               g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
+               g_averageVolume = CalculateAverageVolume(g_symbolParams.volumeAveragePeriod);
             }
 
             // Check if reversal volume is HIGH (strong reversal = good confirmation)
-            g_sellReversalVolumeOK = IsReversalVolumeHigh(g_sellReversalVolume, g_averageVolume, ReversalVolumeMinMultiplier);
+            // Use symbol-specific threshold
+            g_sellReversalVolumeOK = IsReversalVolumeHigh(g_sellReversalVolume, g_averageVolume, g_symbolParams.reversalVolumeMin);
 
             reversalVolumeOK = g_sellReversalVolumeOK;
          }
@@ -3071,7 +3150,7 @@ bool DetectBullishRSIDivergence()
    double rsiValues[];
    ArraySetAsSeries(rsiValues, true);
 
-   int copied = CopyBuffer(g_rsiHandle, 0, 0, DivergenceLookback + 1, rsiValues);
+   int copied = CopyBuffer(g_rsiHandle, 0, 0, g_symbolParams.divergenceLookback + 1, rsiValues);
    if(copied <= 0)
    {
       LogMessage("ERROR: Failed to copy RSI data. Error: " + IntegerToString(GetLastError()));
@@ -3082,7 +3161,7 @@ bool DetectBullishRSIDivergence()
    double lows[];
    ArraySetAsSeries(lows, true);
 
-   copied = CopyLow(_Symbol, PERIOD_M5, 0, DivergenceLookback + 1, lows);
+   copied = CopyLow(_Symbol, PERIOD_M5, 0, g_symbolParams.divergenceLookback + 1, lows);
    if(copied <= 0)
    {
       LogMessage("ERROR: Failed to copy price lows. Error: " + IntegerToString(GetLastError()));
@@ -3092,7 +3171,7 @@ bool DetectBullishRSIDivergence()
    // Find the most recent swing low (excluding current candle at index 0)
    // Look for a low that is lower than its neighbors
    int recentLowIndex = -1;
-   for(int i = 2; i < DivergenceLookback - 1; i++)
+   for(int i = 2; i < g_symbolParams.divergenceLookback - 1; i++)
    {
       if(lows[i] < lows[i-1] && lows[i] < lows[i+1])
       {
@@ -3153,7 +3232,7 @@ bool DetectBearishRSIDivergence()
    double rsiValues[];
    ArraySetAsSeries(rsiValues, true);
 
-   int copied = CopyBuffer(g_rsiHandle, 0, 0, DivergenceLookback + 1, rsiValues);
+   int copied = CopyBuffer(g_rsiHandle, 0, 0, g_symbolParams.divergenceLookback + 1, rsiValues);
    if(copied <= 0)
    {
       LogMessage("ERROR: Failed to copy RSI data. Error: " + IntegerToString(GetLastError()));
@@ -3164,7 +3243,7 @@ bool DetectBearishRSIDivergence()
    double highs[];
    ArraySetAsSeries(highs, true);
 
-   copied = CopyHigh(_Symbol, PERIOD_M5, 0, DivergenceLookback + 1, highs);
+   copied = CopyHigh(_Symbol, PERIOD_M5, 0, g_symbolParams.divergenceLookback + 1, highs);
    if(copied <= 0)
    {
       LogMessage("ERROR: Failed to copy price highs. Error: " + IntegerToString(GetLastError()));
@@ -3174,7 +3253,7 @@ bool DetectBearishRSIDivergence()
    // Find the most recent swing high (excluding current candle at index 0)
    // Look for a high that is higher than its neighbors
    int recentHighIndex = -1;
-   for(int i = 2; i < DivergenceLookback - 1; i++)
+   for(int i = 2; i < g_symbolParams.divergenceLookback - 1; i++)
    {
       if(highs[i] > highs[i-1] && highs[i] > highs[i+1])
       {
@@ -3236,7 +3315,7 @@ bool DetectBullishMACDDivergence()
    double macdValues[];
    ArraySetAsSeries(macdValues, true);
 
-   int copied = CopyBuffer(g_macdHandle, 0, 0, DivergenceLookback + 1, macdValues);
+   int copied = CopyBuffer(g_macdHandle, 0, 0, g_symbolParams.divergenceLookback + 1, macdValues);
    if(copied <= 0)
    {
       LogMessage("ERROR: Failed to copy MACD data. Error: " + IntegerToString(GetLastError()));
@@ -3247,7 +3326,7 @@ bool DetectBullishMACDDivergence()
    double lows[];
    ArraySetAsSeries(lows, true);
 
-   copied = CopyLow(_Symbol, PERIOD_M5, 0, DivergenceLookback + 1, lows);
+   copied = CopyLow(_Symbol, PERIOD_M5, 0, g_symbolParams.divergenceLookback + 1, lows);
    if(copied <= 0)
    {
       LogMessage("ERROR: Failed to copy price lows. Error: " + IntegerToString(GetLastError()));
@@ -3256,7 +3335,7 @@ bool DetectBullishMACDDivergence()
 
    // Find the most recent swing low (excluding current candle at index 0)
    int recentLowIndex = -1;
-   for(int i = 2; i < DivergenceLookback - 1; i++)
+   for(int i = 2; i < g_symbolParams.divergenceLookback - 1; i++)
    {
       if(lows[i] < lows[i-1] && lows[i] < lows[i+1])
       {
@@ -3315,7 +3394,7 @@ bool DetectBearishMACDDivergence()
    double macdValues[];
    ArraySetAsSeries(macdValues, true);
 
-   int copied = CopyBuffer(g_macdHandle, 0, 0, DivergenceLookback + 1, macdValues);
+   int copied = CopyBuffer(g_macdHandle, 0, 0, g_symbolParams.divergenceLookback + 1, macdValues);
    if(copied <= 0)
    {
       LogMessage("ERROR: Failed to copy MACD data. Error: " + IntegerToString(GetLastError()));
@@ -3326,7 +3405,7 @@ bool DetectBearishMACDDivergence()
    double highs[];
    ArraySetAsSeries(highs, true);
 
-   copied = CopyHigh(_Symbol, PERIOD_M5, 0, DivergenceLookback + 1, highs);
+   copied = CopyHigh(_Symbol, PERIOD_M5, 0, g_symbolParams.divergenceLookback + 1, highs);
    if(copied <= 0)
    {
       LogMessage("ERROR: Failed to copy price highs. Error: " + IntegerToString(GetLastError()));
@@ -3335,7 +3414,7 @@ bool DetectBearishMACDDivergence()
 
    // Find the most recent swing high (excluding current candle at index 0)
    int recentHighIndex = -1;
-   for(int i = 2; i < DivergenceLookback - 1; i++)
+   for(int i = 2; i < g_symbolParams.divergenceLookback - 1; i++)
    {
       if(highs[i] > highs[i-1] && highs[i] > highs[i+1])
       {
@@ -3446,10 +3525,10 @@ void ProcessClosedTrade(ulong positionId)
       if(g_adaptiveModeActive)
       {
          g_consecutiveWins++;
-         LogMessage("Consecutive Wins (Adaptive Mode): " + IntegerToString(g_consecutiveWins) + " / " + IntegerToString(AdaptiveWinRecovery));
+         LogMessage("Consecutive Wins (Adaptive Mode): " + IntegerToString(g_consecutiveWins) + " / " + IntegerToString(g_symbolParams.adaptiveWinRecovery));
 
-         // Check if we should deactivate adaptive mode
-         if(g_consecutiveWins >= AdaptiveWinRecovery)
+         // Check if we should deactivate adaptive mode (using symbol-specific trigger)
+         if(g_consecutiveWins >= g_symbolParams.adaptiveWinRecovery)
          {
             DeactivateAdaptiveFilters();
          }
@@ -3466,10 +3545,10 @@ void ProcessClosedTrade(ulong positionId)
 
       // Count consecutive losses
       g_consecutiveLosses++;
-      LogMessage("Consecutive Losses: " + IntegerToString(g_consecutiveLosses) + " / " + IntegerToString(AdaptiveLossTrigger));
+      LogMessage("Consecutive Losses: " + IntegerToString(g_consecutiveLosses) + " / " + IntegerToString(g_symbolParams.adaptiveLossTrigger));
 
-      // Check if we should activate adaptive mode
-      if(!g_adaptiveModeActive && g_consecutiveLosses >= AdaptiveLossTrigger)
+      // Check if we should activate adaptive mode (using symbol-specific trigger)
+      if(!g_adaptiveModeActive && g_consecutiveLosses >= g_symbolParams.adaptiveLossTrigger)
       {
          ActivateAdaptiveFilters();
       }
@@ -3497,9 +3576,9 @@ void ActivateAdaptiveFilters()
    LogMessage("╔════════════════════════════════════════════════════════════╗");
    LogMessage("║  ADAPTIVE MODE ACTIVATED                                   ║");
    LogMessage("╚════════════════════════════════════════════════════════════╝");
-   LogMessage("Reason: " + IntegerToString(AdaptiveLossTrigger) + " consecutive losses detected");
+   LogMessage("Reason: " + IntegerToString(g_symbolParams.adaptiveLossTrigger) + " consecutive losses detected");
    LogMessage("Action: Enabling volume AND divergence filters");
-   LogMessage("Recovery: Need " + IntegerToString(AdaptiveWinRecovery) + " consecutive wins to deactivate");
+   LogMessage("Recovery: Need " + IntegerToString(g_symbolParams.adaptiveWinRecovery) + " consecutive wins to deactivate");
    LogMessage("Original Settings:");
    LogMessage("  Volume Confirmation: " + (g_originalVolumeConfirmation ? "Enabled" : "Disabled"));
    LogMessage("  Divergence Confirmation: " + (g_originalDivergenceConfirmation ? "Enabled" : "Disabled"));
@@ -3528,7 +3607,7 @@ void DeactivateAdaptiveFilters()
    LogMessage("╔════════════════════════════════════════════════════════════╗");
    LogMessage("║  ADAPTIVE MODE DEACTIVATED                                 ║");
    LogMessage("╚════════════════════════════════════════════════════════════╝");
-   LogMessage("Reason: " + IntegerToString(AdaptiveWinRecovery) + " consecutive wins achieved");
+   LogMessage("Reason: " + IntegerToString(g_symbolParams.adaptiveWinRecovery) + " consecutive wins achieved");
    LogMessage("Action: Restoring original filter settings");
    LogMessage("Restored Settings:");
    LogMessage("  Volume Confirmation: " + (g_activeVolumeConfirmation ? "Enabled" : "Disabled"));
@@ -3587,5 +3666,334 @@ void CheckForClosedPositions()
       ProcessClosedTrade((ulong)positionId);
       break; // Only process one closure per tick to avoid spam
    }
+}
+
+//+------------------------------------------------------------------+
+//| Detect symbol category based on symbol name                      |
+//+------------------------------------------------------------------+
+ENUM_SYMBOL_CATEGORY DetectSymbolCategory(string symbol)
+{
+   // Convert to uppercase for comparison
+   StringToUpper(symbol);
+
+   // Major Forex Pairs (most liquid, tight spreads, moderate volatility)
+   if(StringFind(symbol, "EURUSD") >= 0 || StringFind(symbol, "GBPUSD") >= 0 ||
+      StringFind(symbol, "USDJPY") >= 0 || StringFind(symbol, "USDCHF") >= 0 ||
+      StringFind(symbol, "AUDUSD") >= 0 || StringFind(symbol, "USDCAD") >= 0 ||
+      StringFind(symbol, "NZDUSD") >= 0)
+   {
+      return SYMBOL_MAJOR_FOREX;
+   }
+
+   // Minor Forex Pairs (cross pairs, moderate liquidity)
+   if(StringFind(symbol, "EURGBP") >= 0 || StringFind(symbol, "EURJPY") >= 0 ||
+      StringFind(symbol, "GBPJPY") >= 0 || StringFind(symbol, "EURCHF") >= 0 ||
+      StringFind(symbol, "EURAUD") >= 0 || StringFind(symbol, "EURCAD") >= 0 ||
+      StringFind(symbol, "GBPCHF") >= 0 || StringFind(symbol, "GBPAUD") >= 0 ||
+      StringFind(symbol, "AUDNZD") >= 0 || StringFind(symbol, "AUDCAD") >= 0 ||
+      StringFind(symbol, "AUDJPY") >= 0 || StringFind(symbol, "CADJPY") >= 0 ||
+      StringFind(symbol, "CHFJPY") >= 0 || StringFind(symbol, "NZDJPY") >= 0)
+   {
+      return SYMBOL_MINOR_FOREX;
+   }
+
+   // Exotic Forex Pairs (low liquidity, high spreads, high volatility)
+   if(StringFind(symbol, "TRY") >= 0 || StringFind(symbol, "ZAR") >= 0 ||
+      StringFind(symbol, "MXN") >= 0 || StringFind(symbol, "BRL") >= 0 ||
+      StringFind(symbol, "RUB") >= 0 || StringFind(symbol, "HKD") >= 0 ||
+      StringFind(symbol, "SGD") >= 0 || StringFind(symbol, "THB") >= 0 ||
+      StringFind(symbol, "NOK") >= 0 || StringFind(symbol, "SEK") >= 0 ||
+      StringFind(symbol, "DKK") >= 0 || StringFind(symbol, "PLN") >= 0)
+   {
+      return SYMBOL_EXOTIC_FOREX;
+   }
+
+   // Precious Metals (Gold, Silver - high volatility, trending)
+   if(StringFind(symbol, "XAUUSD") >= 0 || StringFind(symbol, "GOLD") >= 0 ||
+      StringFind(symbol, "XAGUSD") >= 0 || StringFind(symbol, "SILVER") >= 0 ||
+      StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "XAG") >= 0)
+   {
+      return SYMBOL_METALS;
+   }
+
+   // Stock Indices (trending, moderate to high volatility)
+   if(StringFind(symbol, "SPX") >= 0 || StringFind(symbol, "SP500") >= 0 ||
+      StringFind(symbol, "NAS100") >= 0 || StringFind(symbol, "NASDAQ") >= 0 ||
+      StringFind(symbol, "US30") >= 0 || StringFind(symbol, "DOW") >= 0 ||
+      StringFind(symbol, "DAX") >= 0 || StringFind(symbol, "GER") >= 0 ||
+      StringFind(symbol, "FTSE") >= 0 || StringFind(symbol, "UK100") >= 0 ||
+      StringFind(symbol, "CAC") >= 0 || StringFind(symbol, "FRA") >= 0 ||
+      StringFind(symbol, "NIKKEI") >= 0 || StringFind(symbol, "JPN") >= 0 ||
+      StringFind(symbol, "ASX") >= 0 || StringFind(symbol, "AUS") >= 0)
+   {
+      return SYMBOL_INDICES;
+   }
+
+   // Cryptocurrencies (very high volatility, 24/7 trading)
+   if(StringFind(symbol, "BTC") >= 0 || StringFind(symbol, "ETH") >= 0 ||
+      StringFind(symbol, "XRP") >= 0 || StringFind(symbol, "LTC") >= 0 ||
+      StringFind(symbol, "BCH") >= 0 || StringFind(symbol, "ADA") >= 0 ||
+      StringFind(symbol, "DOT") >= 0 || StringFind(symbol, "LINK") >= 0 ||
+      StringFind(symbol, "DOGE") >= 0 || StringFind(symbol, "CRYPTO") >= 0)
+   {
+      return SYMBOL_CRYPTO;
+   }
+
+   // Commodities (Oil, Gas, etc.)
+   if(StringFind(symbol, "WTI") >= 0 || StringFind(symbol, "BRENT") >= 0 ||
+      StringFind(symbol, "OIL") >= 0 || StringFind(symbol, "USOIL") >= 0 ||
+      StringFind(symbol, "UKOIL") >= 0 || StringFind(symbol, "NGAS") >= 0 ||
+      StringFind(symbol, "GAS") >= 0)
+   {
+      return SYMBOL_COMMODITIES;
+   }
+
+   return SYMBOL_UNKNOWN;
+}
+
+//+------------------------------------------------------------------+
+//| Get category name as string                                      |
+//+------------------------------------------------------------------+
+string GetSymbolCategoryName(ENUM_SYMBOL_CATEGORY category)
+{
+   switch(category)
+   {
+      case SYMBOL_MAJOR_FOREX:   return "Major Forex";
+      case SYMBOL_MINOR_FOREX:   return "Minor Forex";
+      case SYMBOL_EXOTIC_FOREX:  return "Exotic Forex";
+      case SYMBOL_METALS:        return "Precious Metals";
+      case SYMBOL_INDICES:       return "Stock Indices";
+      case SYMBOL_CRYPTO:        return "Cryptocurrencies";
+      case SYMBOL_COMMODITIES:   return "Commodities";
+      default:                   return "Unknown";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get optimized parameters for symbol category                     |
+//+------------------------------------------------------------------+
+SymbolParameters GetSymbolParameters(ENUM_SYMBOL_CATEGORY category)
+{
+   SymbolParameters params;
+
+   switch(category)
+   {
+      case SYMBOL_MAJOR_FOREX:
+         // Major pairs: Moderate volatility, high liquidity
+         // Standard settings work well
+         params.breakoutVolumeMax = 0.8;      // Tighter - want very weak breakouts
+         params.reversalVolumeMin = 1.8;      // Higher - want strong reversals
+         params.volumeAveragePeriod = 20;
+         params.rsiPeriod = 14;
+         params.macdFast = 12;
+         params.macdSlow = 26;
+         params.macdSignal = 9;
+         params.divergenceLookback = 20;
+         params.adaptiveLossTrigger = 3;      // Standard trigger
+         params.adaptiveWinRecovery = 2;
+         break;
+
+      case SYMBOL_MINOR_FOREX:
+         // Minor pairs: Higher volatility, moderate liquidity
+         // Need slightly more conservative settings
+         params.breakoutVolumeMax = 0.7;      // Even tighter
+         params.reversalVolumeMin = 2.0;      // Want very strong reversals
+         params.volumeAveragePeriod = 25;     // Longer average for stability
+         params.rsiPeriod = 14;
+         params.macdFast = 12;
+         params.macdSlow = 26;
+         params.macdSignal = 9;
+         params.divergenceLookback = 25;      // Look back further
+         params.adaptiveLossTrigger = 2;      // Activate filters sooner
+         params.adaptiveWinRecovery = 3;      // Need more wins to relax
+         break;
+
+      case SYMBOL_EXOTIC_FOREX:
+         // Exotic pairs: Very high volatility, low liquidity
+         // Most conservative settings
+         params.breakoutVolumeMax = 0.6;      // Very tight
+         params.reversalVolumeMin = 2.5;      // Very strong reversals needed
+         params.volumeAveragePeriod = 30;     // Longer average
+         params.rsiPeriod = 21;               // Slower RSI
+         params.macdFast = 16;                // Slower MACD
+         params.macdSlow = 32;
+         params.macdSignal = 12;
+         params.divergenceLookback = 30;      // Look back much further
+         params.adaptiveLossTrigger = 2;      // Very quick to activate
+         params.adaptiveWinRecovery = 4;      // Need many wins to relax
+         break;
+
+      case SYMBOL_METALS:
+         // Metals (Gold/Silver): High volatility, trending
+         // Need to catch strong trends, avoid whipsaws
+         params.breakoutVolumeMax = 0.7;
+         params.reversalVolumeMin = 2.2;
+         params.volumeAveragePeriod = 25;
+         params.rsiPeriod = 14;
+         params.macdFast = 12;
+         params.macdSlow = 26;
+         params.macdSignal = 9;
+         params.divergenceLookback = 25;
+         params.adaptiveLossTrigger = 2;      // Quick to protect
+         params.adaptiveWinRecovery = 3;
+         break;
+
+      case SYMBOL_INDICES:
+         // Indices: Trending, moderate volatility
+         // Good for false breakout strategy
+         params.breakoutVolumeMax = 0.8;
+         params.reversalVolumeMin = 1.8;
+         params.volumeAveragePeriod = 20;
+         params.rsiPeriod = 14;
+         params.macdFast = 12;
+         params.macdSlow = 26;
+         params.macdSignal = 9;
+         params.divergenceLookback = 20;
+         params.adaptiveLossTrigger = 3;
+         params.adaptiveWinRecovery = 2;
+         break;
+
+      case SYMBOL_CRYPTO:
+         // Crypto: Extremely high volatility, 24/7
+         // Most aggressive filtering needed
+         params.breakoutVolumeMax = 0.5;      // Extremely tight
+         params.reversalVolumeMin = 3.0;      // Massive reversals only
+         params.volumeAveragePeriod = 40;     // Much longer average
+         params.rsiPeriod = 21;               // Slower indicators
+         params.macdFast = 16;
+         params.macdSlow = 32;
+         params.macdSignal = 12;
+         params.divergenceLookback = 40;      // Look back very far
+         params.adaptiveLossTrigger = 1;      // Activate after single loss
+         params.adaptiveWinRecovery = 5;      // Need many wins
+         break;
+
+      case SYMBOL_COMMODITIES:
+         // Commodities (Oil, Gas): High volatility, news-driven
+         params.breakoutVolumeMax = 0.7;
+         params.reversalVolumeMin = 2.0;
+         params.volumeAveragePeriod = 25;
+         params.rsiPeriod = 14;
+         params.macdFast = 12;
+         params.macdSlow = 26;
+         params.macdSignal = 9;
+         params.divergenceLookback = 25;
+         params.adaptiveLossTrigger = 2;
+         params.adaptiveWinRecovery = 3;
+         break;
+
+      default: // SYMBOL_UNKNOWN
+         // Use default input parameters
+         params.breakoutVolumeMax = BreakoutVolumeMaxMultiplier;
+         params.reversalVolumeMin = ReversalVolumeMinMultiplier;
+         params.volumeAveragePeriod = VolumeAveragePeriod;
+         params.rsiPeriod = RSI_Period;
+         params.macdFast = MACD_Fast;
+         params.macdSlow = MACD_Slow;
+         params.macdSignal = MACD_Signal;
+         params.divergenceLookback = DivergenceLookback;
+         params.adaptiveLossTrigger = AdaptiveLossTrigger;
+         params.adaptiveWinRecovery = AdaptiveWinRecovery;
+         break;
+   }
+
+   return params;
+}
+
+//+------------------------------------------------------------------+
+//| Apply symbol-specific parameters                                 |
+//+------------------------------------------------------------------+
+void ApplySymbolParameters()
+{
+   if(!UseSymbolSpecificSettings)
+   {
+      LogMessage("Symbol-specific optimization: DISABLED");
+      LogMessage("Using default input parameters for all symbols");
+      return;
+   }
+
+   // Detect symbol category (or use manual override)
+   if(ManualSymbolCategory == "AUTO")
+   {
+      g_symbolCategory = DetectSymbolCategory(_Symbol);
+      LogMessage("Symbol category: AUTO-DETECTED as " + GetSymbolCategoryName(g_symbolCategory));
+   }
+   else if(ManualSymbolCategory == "MAJOR_FOREX")
+   {
+      g_symbolCategory = SYMBOL_MAJOR_FOREX;
+      LogMessage("Symbol category: MANUALLY SET to Major Forex");
+   }
+   else if(ManualSymbolCategory == "MINOR_FOREX")
+   {
+      g_symbolCategory = SYMBOL_MINOR_FOREX;
+      LogMessage("Symbol category: MANUALLY SET to Minor Forex");
+   }
+   else if(ManualSymbolCategory == "EXOTIC_FOREX")
+   {
+      g_symbolCategory = SYMBOL_EXOTIC_FOREX;
+      LogMessage("Symbol category: MANUALLY SET to Exotic Forex");
+   }
+   else if(ManualSymbolCategory == "METALS")
+   {
+      g_symbolCategory = SYMBOL_METALS;
+      LogMessage("Symbol category: MANUALLY SET to Precious Metals");
+   }
+   else if(ManualSymbolCategory == "INDICES")
+   {
+      g_symbolCategory = SYMBOL_INDICES;
+      LogMessage("Symbol category: MANUALLY SET to Stock Indices");
+   }
+   else if(ManualSymbolCategory == "CRYPTO")
+   {
+      g_symbolCategory = SYMBOL_CRYPTO;
+      LogMessage("Symbol category: MANUALLY SET to Cryptocurrencies");
+   }
+   else if(ManualSymbolCategory == "COMMODITIES")
+   {
+      g_symbolCategory = SYMBOL_COMMODITIES;
+      LogMessage("Symbol category: MANUALLY SET to Commodities");
+   }
+   else
+   {
+      g_symbolCategory = DetectSymbolCategory(_Symbol);
+      LogMessage("Symbol category: Invalid manual setting, AUTO-DETECTED as " + GetSymbolCategoryName(g_symbolCategory));
+   }
+
+   // Get optimized parameters for this category
+   g_symbolParams = GetSymbolParameters(g_symbolCategory);
+
+   // Log parameter comparison
+   LogMessage("╔════════════════════════════════════════════════════════════╗");
+   LogMessage("║  SYMBOL-SPECIFIC PARAMETERS APPLIED                        ║");
+   LogMessage("╚════════════════════════════════════════════════════════════╝");
+   LogMessage("Symbol: " + _Symbol);
+   LogMessage("Category: " + GetSymbolCategoryName(g_symbolCategory));
+   LogMessage("");
+   LogMessage("Volume Parameters:");
+   LogMessage("  Breakout Max:     " + DoubleToString(g_symbolParams.breakoutVolumeMax, 2) +
+              " (default: " + DoubleToString(g_defaultParams.breakoutVolumeMax, 2) + ")");
+   LogMessage("  Reversal Min:     " + DoubleToString(g_symbolParams.reversalVolumeMin, 2) +
+              " (default: " + DoubleToString(g_defaultParams.reversalVolumeMin, 2) + ")");
+   LogMessage("  Average Period:   " + IntegerToString(g_symbolParams.volumeAveragePeriod) +
+              " (default: " + IntegerToString(g_defaultParams.volumeAveragePeriod) + ")");
+   LogMessage("");
+   LogMessage("Divergence Parameters:");
+   LogMessage("  RSI Period:       " + IntegerToString(g_symbolParams.rsiPeriod) +
+              " (default: " + IntegerToString(g_defaultParams.rsiPeriod) + ")");
+   LogMessage("  MACD Fast:        " + IntegerToString(g_symbolParams.macdFast) +
+              " (default: " + IntegerToString(g_defaultParams.macdFast) + ")");
+   LogMessage("  MACD Slow:        " + IntegerToString(g_symbolParams.macdSlow) +
+              " (default: " + IntegerToString(g_defaultParams.macdSlow) + ")");
+   LogMessage("  MACD Signal:      " + IntegerToString(g_symbolParams.macdSignal) +
+              " (default: " + IntegerToString(g_defaultParams.macdSignal) + ")");
+   LogMessage("  Lookback Period:  " + IntegerToString(g_symbolParams.divergenceLookback) +
+              " (default: " + IntegerToString(g_defaultParams.divergenceLookback) + ")");
+   LogMessage("");
+   LogMessage("Adaptive Triggers:");
+   LogMessage("  Loss Trigger:     " + IntegerToString(g_symbolParams.adaptiveLossTrigger) +
+              " (default: " + IntegerToString(g_defaultParams.adaptiveLossTrigger) + ")");
+   LogMessage("  Win Recovery:     " + IntegerToString(g_symbolParams.adaptiveWinRecovery) +
+              " (default: " + IntegerToString(g_defaultParams.adaptiveWinRecovery) + ")");
+   LogMessage("════════════════════════════════════════════════════════════");
 }
 
