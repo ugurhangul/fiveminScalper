@@ -12,7 +12,6 @@
 input group "=== Strategy Settings ==="
 input double   EntryOffsetPercent = 0.01;      // Entry offset from 4H high/low (%)
 input double   StopLossOffsetPercent = 0.02;   // Stop-loss offset from 4H high/low (%)
-input double   MaxStopLossPoints = 100.0;      // Maximum acceptable SL in points (0 = no limit)
 input double   RiskRewardRatio = 2.0;          // Risk to Reward Ratio (1:X)
 
 input group "=== Risk Management ==="
@@ -755,9 +754,10 @@ void MonitorEntries()
       {
          g_buyReversalConfirmed = true;
 
-         // Find the LOWEST low among the LAST 5 candles (including current reversal candle)
-         // Calculate start time: 5 candles * 5 minutes = 25 minutes before current candle
-         datetime startTime = candle5mTime - (5 * 5 * 60);  // 5 candles back
+         // Find the LOWEST low among the LATEST 10 candles within breakout-to-reversal range
+         // Use the LATER of: (1) 10 candles back, or (2) breakout time
+         // This ensures we analyze up to 10 candles but never before the breakout
+         datetime startTime = MathMax(g_buyBreakoutCandleTime, candle5mTime - (10 * 5 * 60));
          double lowestLow = FindLowestLowInRange(startTime, candle5mTime);
 
          LogMessage("*** BUY REVERSAL CONFIRMED ***");
@@ -769,8 +769,9 @@ void MonitorEntries()
                     " C=" + DoubleToString(candle5mClose, _Digits));
          LogMessage("Candle Close: " + DoubleToString(candle5mClose, _Digits) + " | 4H Low: " + DoubleToString(g_4HLow, _Digits));
          LogMessage("Reversal Distance: " + DoubleToString(candle5mClose - g_4HLow, _Digits) + " points");
-         LogMessage("Analyzing all candles from " + TimeToString(g_buyBreakoutCandleTime, TIME_MINUTES) +
+         LogMessage("Analyzing latest 10 candles from " + TimeToString(startTime, TIME_MINUTES) +
                     " to " + TimeToString(candle5mTime, TIME_MINUTES));
+         LogMessage("(Breakout occurred at: " + TimeToString(g_buyBreakoutCandleTime, TIME_MINUTES) + ")");
 
          // Validate lowestLow before proceeding
          if(lowestLow == DBL_MAX || lowestLow <= 0)
@@ -851,9 +852,10 @@ void MonitorEntries()
       {
          g_sellReversalConfirmed = true;
 
-         // Find the HIGHEST high among the LAST 5 candles (including current reversal candle)
-         // Calculate start time: 5 candles * 5 minutes = 25 minutes before current candle
-         datetime startTime = candle5mTime - (5 * 5 * 60);  // 5 candles back
+         // Find the HIGHEST high among the LATEST 10 candles within breakout-to-reversal range
+         // Use the LATER of: (1) 10 candles back, or (2) breakout time
+         // This ensures we analyze up to 10 candles but never before the breakout
+         datetime startTime = MathMax(g_sellBreakoutCandleTime, candle5mTime - (10 * 5 * 60));
          double highestHigh = FindHighestHighInRange(startTime, candle5mTime);
 
          LogMessage("*** SELL REVERSAL CONFIRMED ***");
@@ -865,8 +867,9 @@ void MonitorEntries()
                     " C=" + DoubleToString(candle5mClose, _Digits));
          LogMessage("Candle Close: " + DoubleToString(candle5mClose, _Digits) + " | 4H High: " + DoubleToString(g_4HHigh, _Digits));
          LogMessage("Reversal Distance: " + DoubleToString(g_4HHigh - candle5mClose, _Digits) + " points");
-         LogMessage("Analyzing all candles from " + TimeToString(g_sellBreakoutCandleTime, TIME_MINUTES) +
+         LogMessage("Analyzing latest 10 candles from " + TimeToString(startTime, TIME_MINUTES) +
                     " to " + TimeToString(candle5mTime, TIME_MINUTES));
+         LogMessage("(Breakout occurred at: " + TimeToString(g_sellBreakoutCandleTime, TIME_MINUTES) + ")");
 
          // Validate highestHigh before proceeding
          if(highestHigh <= 0 || highestHigh == DBL_MAX)
@@ -1125,9 +1128,9 @@ double CalculateLotSize(double entryPrice, double stopLoss)
 
    // Normalize lot size using cached values
    lotSize = MathFloor(lotSize / g_symbolLotStep) * g_symbolLotStep;
-   lotSize = MathMax(g_symbolMinLot, MathMin(g_symbolMaxLot, lotSize));
-   lotSize = MathMin(lotSize, MaxLotSize);
-   lotSize = MathMax(lotSize, MinLotSize);
+   // Ensure both symbol AND user minimums/maximums are respected
+   lotSize = MathMax(lotSize, MathMax(g_symbolMinLot, MinLotSize));
+   lotSize = MathMin(lotSize, MathMin(g_symbolMaxLot, MaxLotSize));
 
    if(EnableDetailedLogging)
    {
@@ -2014,6 +2017,7 @@ void Update4HData(int candleIndex)
 
 //+------------------------------------------------------------------+
 //| Find the lowest low among BULLISH candles - OPTIMIZED            |
+//| Analyzes up to 10 latest candles within breakout-to-reversal range|
 //+------------------------------------------------------------------+
 double FindLowestLowInRange(datetime startTime, datetime endTime)
 {
@@ -2021,9 +2025,9 @@ double FindLowestLowInRange(datetime startTime, datetime endTime)
    int candlesAnalyzed = 0;
    int bullishCandles = 0;
 
-   LogMessage("--- Finding Lowest Low in Breakout Zone ---");
-   LogMessage("Start: " + TimeToString(startTime, TIME_DATE|TIME_MINUTES));
-   LogMessage("End: " + TimeToString(endTime, TIME_DATE|TIME_MINUTES));
+   LogMessage("--- Finding Lowest Low in Latest Candles (Max 10) ---");
+   LogMessage("Start Time: " + TimeToString(startTime, TIME_DATE|TIME_MINUTES));
+   LogMessage("End Time (Reversal): " + TimeToString(endTime, TIME_DATE|TIME_MINUTES));
    LogMessage("Priority: BULLISH candles that closed below 4H Low");
    LogMessage("Fallback: ANY candles that closed below 4H Low if no bullish found");
 
@@ -2149,6 +2153,7 @@ double FindLowestLowInRange(datetime startTime, datetime endTime)
 
 //+------------------------------------------------------------------+
 //| Find the highest high among BEARISH candles - OPTIMIZED          |
+//| Analyzes up to 10 latest candles within breakout-to-reversal range|
 //+------------------------------------------------------------------+
 double FindHighestHighInRange(datetime startTime, datetime endTime)
 {
@@ -2156,9 +2161,9 @@ double FindHighestHighInRange(datetime startTime, datetime endTime)
    int candlesAnalyzed = 0;
    int bearishCandles = 0;
 
-   LogMessage("--- Finding Highest High in Breakout Zone ---");
-   LogMessage("Start: " + TimeToString(startTime, TIME_DATE|TIME_MINUTES));
-   LogMessage("End: " + TimeToString(endTime, TIME_DATE|TIME_MINUTES));
+   LogMessage("--- Finding Highest High in Latest Candles (Max 10) ---");
+   LogMessage("Start Time: " + TimeToString(startTime, TIME_DATE|TIME_MINUTES));
+   LogMessage("End Time (Reversal): " + TimeToString(endTime, TIME_DATE|TIME_MINUTES));
    LogMessage("Priority: BEARISH candles that closed above 4H High");
    LogMessage("Fallback: ANY candles that closed above 4H High if no bearish found");
 
@@ -2282,200 +2287,24 @@ double FindHighestHighInRange(datetime startTime, datetime endTime)
    return highestHigh;
 }
 
-//+------------------------------------------------------------------+
-//| Find swing low in BREAKOUT ZONE (for tighter BUY stop-loss)      |
-//+------------------------------------------------------------------+
-double FindSwingLowInRange(datetime startTime, datetime endTime)
-{
-   double swingLow = DBL_MAX;
-   bool foundSwing = false;
-   int candlesAnalyzed = 0;
 
-   LogMessage("--- Searching for Swing Low in BREAKOUT ZONE ---");
-   LogMessage("Only analyzing candles that closed BELOW 4H Low: " + DoubleToString(g_4HLow, _Digits));
-
-   // Iterate through 5-minute candles backwards from index 1
-   for(int i = 2; i < 100; i++)  // Start at 2 to allow checking i-1
-   {
-      datetime candleTime = iTime(_Symbol, PERIOD_M5, i);
-
-      // Stop if we've gone past the start time
-      if(candleTime < startTime)
-         break;
-
-      // Only process candles within our range (excluding the edges)
-      if(candleTime > startTime && candleTime < endTime)
-      {
-         double candleClose = iClose(_Symbol, PERIOD_M5, i);
-
-         // CRITICAL: Only analyze candles that closed BELOW 4H Low (in breakout zone)
-         if(candleClose < g_4HLow)
-         {
-            candlesAnalyzed++;
-
-            double currentLow = iLow(_Symbol, PERIOD_M5, i);
-            double prevLow = iLow(_Symbol, PERIOD_M5, i - 1);
-            double nextLow = iLow(_Symbol, PERIOD_M5, i + 1);
-
-            // Check if this is a swing low (lower than both neighbors)
-            if(currentLow < prevLow && currentLow < nextLow)
-            {
-               // We want the HIGHEST swing low (closest to entry)
-               if(currentLow < swingLow)
-               {
-                  swingLow = currentLow;
-                  foundSwing = true;
-                  LogMessage("  Found swing low at " + TimeToString(candleTime, TIME_MINUTES) +
-                            ": " + DoubleToString(currentLow, _Digits) +
-                            " (Close: " + DoubleToString(candleClose, _Digits) + " < 4H Low)");
-               }
-            }
-         }
-      }
-   }
-
-   LogMessage("Analyzed " + IntegerToString(candlesAnalyzed) + " candles in breakout zone");
-
-   if(foundSwing)
-   {
-      LogMessage("Best swing low (highest): " + DoubleToString(swingLow, _Digits));
-   }
-   else
-   {
-      LogMessage("No swing low found in breakout zone");
-   }
-
-   return foundSwing ? swingLow : DBL_MAX;
-}
-
-//+------------------------------------------------------------------+
-//| Find swing high in BREAKOUT ZONE (for tighter SELL stop-loss)    |
-//+------------------------------------------------------------------+
-double FindSwingHighInRange(datetime startTime, datetime endTime)
-{
-   double swingHigh = 0;
-   bool foundSwing = false;
-   int candlesAnalyzed = 0;
-
-   LogMessage("--- Searching for Swing High in BREAKOUT ZONE ---");
-   LogMessage("Only analyzing candles that closed ABOVE 4H High: " + DoubleToString(g_4HHigh, _Digits));
-
-   // Iterate through 5-minute candles backwards from index 1
-   for(int i = 2; i < 100; i++)  // Start at 2 to allow checking i-1
-   {
-      datetime candleTime = iTime(_Symbol, PERIOD_M5, i);
-
-      // Stop if we've gone past the start time
-      if(candleTime < startTime)
-         break;
-
-      // Only process candles within our range (excluding the edges)
-      if(candleTime > startTime && candleTime < endTime)
-      {
-         double candleClose = iClose(_Symbol, PERIOD_M5, i);
-
-         // CRITICAL: Only analyze candles that closed ABOVE 4H High (in breakout zone)
-         if(candleClose > g_4HHigh)
-         {
-            candlesAnalyzed++;
-
-            double currentHigh = iHigh(_Symbol, PERIOD_M5, i);
-            double prevHigh = iHigh(_Symbol, PERIOD_M5, i - 1);
-            double nextHigh = iHigh(_Symbol, PERIOD_M5, i + 1);
-
-            // Check if this is a swing high (higher than both neighbors)
-            if(currentHigh > prevHigh && currentHigh > nextHigh)
-            {
-               // We want the LOWEST swing high (closest to entry)
-               if(swingHigh == 0 || currentHigh < swingHigh)
-               {
-                  swingHigh = currentHigh;
-                  foundSwing = true;
-                  LogMessage("  Found swing high at " + TimeToString(candleTime, TIME_MINUTES) +
-                            ": " + DoubleToString(currentHigh, _Digits) +
-                            " (Close: " + DoubleToString(candleClose, _Digits) + " > 4H High)");
-               }
-            }
-         }
-      }
-   }
-
-   LogMessage("Analyzed " + IntegerToString(candlesAnalyzed) + " candles in breakout zone");
-
-   if(foundSwing)
-   {
-      LogMessage("Best swing high (lowest): " + DoubleToString(swingHigh, _Digits));
-   }
-   else
-   {
-      LogMessage("No swing high found in breakout zone");
-   }
-
-   return foundSwing ? swingHigh : 0;
-}
 
 //+------------------------------------------------------------------+
 //| Calculate optimized stop-loss for BUY order                      |
 //+------------------------------------------------------------------+
 double CalculateOptimizedBuySL(double lowestLow, double entryPrice, datetime breakoutTime, datetime reversalTime)
 {
-   // Calculate initial SL using the lowest low
-   double initialSL = lowestLow - (lowestLow * StopLossOffsetPercent / 100.0);
-   double initialRisk = entryPrice - initialSL;
+   // Calculate SL using the lowest low with offset
+   double stopLoss = lowestLow - (lowestLow * StopLossOffsetPercent / 100.0);
+   double risk = entryPrice - stopLoss;
 
-   LogMessage("=== Optimizing BUY Stop-Loss ===");
+   LogMessage("=== Calculating BUY Stop-Loss ===");
    LogMessage("Entry Price: " + DoubleToString(entryPrice, _Digits));
    LogMessage("Lowest Low in pattern: " + DoubleToString(lowestLow, _Digits));
-   LogMessage("Initial SL: " + DoubleToString(initialSL, _Digits));
-   LogMessage("Initial Risk: " + DoubleToString(initialRisk, _Digits) + " points");
+   LogMessage("Stop-Loss: " + DoubleToString(stopLoss, _Digits));
+   LogMessage("Risk: " + DoubleToString(risk, _Digits));
 
-   // Check if MaxStopLossPoints limit is enabled and if risk exceeds it
-   if(MaxStopLossPoints > 0 && initialRisk > MaxStopLossPoints)
-   {
-      LogMessage("WARNING: Initial risk (" + DoubleToString(initialRisk, 2) + ") exceeds max (" +
-                DoubleToString(MaxStopLossPoints, 2) + ")");
-      LogMessage("Searching for swing low to tighten SL...");
-
-      // Try to find a swing low within the pattern
-      double swingLow = FindSwingLowInRange(breakoutTime, reversalTime);
-
-      if(swingLow != DBL_MAX && swingLow > lowestLow)
-      {
-         // Found a swing low that's higher than the absolute low
-         double swingSL = swingLow - (swingLow * StopLossOffsetPercent / 100.0);
-         double swingRisk = entryPrice - swingSL;
-
-         LogMessage("Swing Low found: " + DoubleToString(swingLow, _Digits));
-         LogMessage("Swing SL: " + DoubleToString(swingSL, _Digits));
-         LogMessage("Swing Risk: " + DoubleToString(swingRisk, _Digits) + " points");
-
-         // Use swing SL if it's within the max limit
-         if(swingRisk <= MaxStopLossPoints)
-         {
-            LogMessage("USING SWING LOW - Risk within limit");
-            return swingSL;
-         }
-         else
-         {
-            LogMessage("Swing risk still too high, applying maximum SL cap");
-         }
-      }
-      else
-      {
-         LogMessage("No suitable swing low found, applying maximum SL cap");
-      }
-
-      // Fall back to maximum SL cap
-      double cappedSL = entryPrice - MaxStopLossPoints;
-      LogMessage("USING CAPPED SL: " + DoubleToString(cappedSL, _Digits) +
-                " (Entry - " + DoubleToString(MaxStopLossPoints, 2) + " points)");
-      return cappedSL;
-   }
-   else
-   {
-      LogMessage("Initial risk within acceptable range - using lowest low");
-      return initialSL;
-   }
+   return stopLoss;
 }
 
 //+------------------------------------------------------------------+
@@ -2483,63 +2312,17 @@ double CalculateOptimizedBuySL(double lowestLow, double entryPrice, datetime bre
 //+------------------------------------------------------------------+
 double CalculateOptimizedSellSL(double highestHigh, double entryPrice, datetime breakoutTime, datetime reversalTime)
 {
-   // Calculate initial SL using the highest high
-   double initialSL = highestHigh + (highestHigh * StopLossOffsetPercent / 100.0);
-   double initialRisk = initialSL - entryPrice;
+   // Calculate SL using the highest high with offset
+   double stopLoss = highestHigh + (highestHigh * StopLossOffsetPercent / 100.0);
+   double risk = stopLoss - entryPrice;
 
-   LogMessage("=== Optimizing SELL Stop-Loss ===");
+   LogMessage("=== Calculating SELL Stop-Loss ===");
    LogMessage("Entry Price: " + DoubleToString(entryPrice, _Digits));
    LogMessage("Highest High in pattern: " + DoubleToString(highestHigh, _Digits));
-   LogMessage("Initial SL: " + DoubleToString(initialSL, _Digits));
-   LogMessage("Initial Risk: " + DoubleToString(initialRisk, _Digits) + " points");
+   LogMessage("Stop-Loss: " + DoubleToString(stopLoss, _Digits));
+   LogMessage("Risk: " + DoubleToString(risk, _Digits));
 
-   // Check if MaxStopLossPoints limit is enabled and if risk exceeds it
-   if(MaxStopLossPoints > 0 && initialRisk > MaxStopLossPoints)
-   {
-      LogMessage("WARNING: Initial risk (" + DoubleToString(initialRisk, 2) + ") exceeds max (" +
-                DoubleToString(MaxStopLossPoints, 2) + ")");
-      LogMessage("Searching for swing high to tighten SL...");
-
-      // Try to find a swing high within the pattern
-      double swingHigh = FindSwingHighInRange(breakoutTime, reversalTime);
-
-      if(swingHigh > 0 && swingHigh < highestHigh)
-      {
-         // Found a swing high that's lower than the absolute high
-         double swingSL = swingHigh + (swingHigh * StopLossOffsetPercent / 100.0);
-         double swingRisk = swingSL - entryPrice;
-
-         LogMessage("Swing High found: " + DoubleToString(swingHigh, _Digits));
-         LogMessage("Swing SL: " + DoubleToString(swingSL, _Digits));
-         LogMessage("Swing Risk: " + DoubleToString(swingRisk, _Digits) + " points");
-
-         // Use swing SL if it's within the max limit
-         if(swingRisk <= MaxStopLossPoints)
-         {
-            LogMessage("USING SWING HIGH - Risk within limit");
-            return swingSL;
-         }
-         else
-         {
-            LogMessage("Swing risk still too high, applying maximum SL cap");
-         }
-      }
-      else
-      {
-         LogMessage("No suitable swing high found, applying maximum SL cap");
-      }
-
-      // Fall back to maximum SL cap
-      double cappedSL = entryPrice + MaxStopLossPoints;
-      LogMessage("USING CAPPED SL: " + DoubleToString(cappedSL, _Digits) +
-                " (Entry + " + DoubleToString(MaxStopLossPoints, 2) + " points)");
-      return cappedSL;
-   }
-   else
-   {
-      LogMessage("Initial risk within acceptable range - using highest high");
-      return initialSL;
-   }
+   return stopLoss;
 }
 
 
