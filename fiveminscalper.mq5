@@ -32,7 +32,7 @@ input int      EndHour = 23;                   // Trading end hour
 input group "=== Advanced Settings ==="
 input bool     UseBreakeven = true;            // Move SL to breakeven
 input double   BreakevenTriggerRR = 1.0;       // Trigger breakeven at RR ratio
-input bool     UseOnly00UTCCandle = true;      // Use only 00:00 UTC 4H candle (closes at 04:00)
+input bool     UseOnly00UTCCandle = true;      // Use only first 4H candle of day (chart shows 04:00)
 input int      MagicNumber = 123456;           // Magic number for orders
 input string   TradeComment = "5MinScalper";   // Trade comment
 
@@ -44,6 +44,11 @@ input bool     ExportCandleData = false;       // Export candle data to CSV for 
 
 input group "=== Debug Settings ==="
 input bool     LogActiveTradesEvery5Min = true; // Log all active trades every 5-min candle
+
+input group "=== Volume Confirmation ==="
+input bool     UseVolumeConfirmation = true;    // Enable volume confirmation for breakouts
+input double   VolumeThresholdMultiplier = 1.5; // Volume threshold (x times average)
+input int      VolumeAveragePeriod = 20;        // Period for volume moving average
 
 input group "=== Visual Settings ==="
 input bool     ShowLevelsOnChart = true;       // Draw levels on chart
@@ -58,7 +63,7 @@ input ENUM_LINE_STYLE LineStyle = STYLE_SOLID; // Line style
 datetime g_last4HCandleTime = 0;               // Last processed 4H candle time (for trading)
 datetime g_lastSeen4HCandleTime = 0;           // Last seen 4H candle time (including skipped ones)
 datetime g_last5MinCandleTime = 0;             // Last processed 5-min candle time
-datetime g_processed04CandleTime = 0;          // Time of the 04:00 UTC candle we're using
+datetime g_processed04CandleTime = 0;          // Opening time of first 4H candle of day (iTime returns open time, chart shows close time)
 double   g_4HHigh = 0;                         // 4H candle high (SELL breakout level)
 double   g_4HLow = 0;                          // 4H candle low (BUY breakout level)
 bool     g_buyOrderPlaced = false;             // Buy order status
@@ -76,6 +81,13 @@ datetime g_buyBreakoutCandleTime = 0;          // Time of the breakout candle
 bool     g_sellBreakoutConfirmed = false;      // 5min candle closed above 4H High
 bool     g_sellReversalConfirmed = false;      // 5min candle closed below 4H High after breakout
 datetime g_sellBreakoutCandleTime = 0;         // Time of the breakout candle
+
+// Volume confirmation tracking
+long     g_buyBreakoutVolume = 0;              // Volume of the BUY breakout candle
+long     g_sellBreakoutVolume = 0;             // Volume of the SELL breakout candle
+double   g_averageVolume = 0;                  // Average volume over reference period
+bool     g_buyVolumeConfirmed = false;         // BUY breakout has sufficient volume
+bool     g_sellVolumeConfirmed = false;        // SELL breakout has sufficient volume
 
 // Breakeven tracking to prevent redundant checks
 ulong    g_breakevenSetTickets[];              // Array of tickets that already have breakeven set
@@ -174,7 +186,7 @@ int OnInit()
       LogMessage("Trailing Stop Trigger: " + DoubleToString(TrailingStopTriggerRR, 2) + " R:R");
       LogMessage("Trailing Stop Distance: " + DoubleToString(TrailingStopDistance, 0) + " points");
    }
-   LogMessage("Use Only 00:00 UTC Candle: " + (UseOnly00UTCCandle ? "Yes (closes at 04:00)" : "No"));
+   LogMessage("Use Only First 4H Candle: " + (UseOnly00UTCCandle ? "Yes (chart shows 04:00, opens 00:00-closes 04:00 UTC)" : "No"));
    LogMessage("Trading Hours Filter: " + (UseTradingHours ? "Enabled" : "Disabled"));
    if(UseTradingHours)
    {
@@ -222,31 +234,34 @@ int OnInit()
       int candleIndex = 1; // Start with last closed candle
       bool foundValidCandle = false;
 
-      // If 00:00 UTC filter is enabled, search for the most recent 00:00 UTC candle
+      // If first 4H candle filter is enabled, search for it
+      // NOTE: iTime() returns OPENING time. Chart displays CLOSING time.
+      // First 4H candle: opens 00:00, closes 04:00 (chart shows 04:00)
       if(UseOnly00UTCCandle)
       {
-         LogMessage("Searching for most recent 00:00 UTC candle (closes at 04:00)...");
+         LogMessage("Searching for first 4H candle of day (opens 00:00, closes 04:00, chart shows 04:00)...");
 
          // Search backwards up to 24 hours (6 x 4H candles)
          for(int i = 1; i <= 6; i++)
          {
-            datetime candleTime = iTime(_Symbol, PERIOD_H4, i);
+            datetime candleTime = iTime(_Symbol, PERIOD_H4, i);  // Returns opening time
             MqlDateTime timeStruct;
             TimeToStruct(candleTime, timeStruct);
 
-            if(timeStruct.hour == 0)  // Found a 00:00 UTC candle
+            if(timeStruct.hour == 4)  // Opening time is 00:00 (chart displays 04:00 as closing time)
             {
                candleIndex = i;
                foundValidCandle = true;
-               LogMessage("Found 00:00 UTC candle at index " + IntegerToString(i) + " - " + TimeToString(candleTime, TIME_DATE|TIME_MINUTES) + " UTC");
-               LogMessage("This candle closes at 04:00 UTC");
+               LogMessage("Found first 4H candle at index " + IntegerToString(i));
+               LogMessage("Opening time (iTime): " + TimeToString(candleTime, TIME_DATE|TIME_MINUTES) + " UTC");
+               LogMessage("Closing time (chart): 04:00 UTC");
                break;
             }
          }
 
          if(!foundValidCandle)
          {
-            LogMessage("No 00:00 UTC candle found in last 24 hours - waiting for next one");
+            LogMessage("No first 4H candle found in last 24 hours - waiting for next one");
             LogMessage("EA will not trade until a valid 4H candle is processed");
          }
       }
@@ -268,12 +283,13 @@ int OnInit()
          g_4HLow = iLow(_Symbol, PERIOD_H4, candleIndex);
          double open = iOpen(_Symbol, PERIOD_H4, candleIndex);
          double close = iClose(_Symbol, PERIOD_H4, candleIndex);
+         long volume4H = iVolume(_Symbol, PERIOD_H4, candleIndex);
          datetime closedCandleTime = iTime(_Symbol, PERIOD_H4, candleIndex);
 
-         // Store which 00:00 candle we're using
+         // Store opening time of first 4H candle (iTime returns opening time)
          if(UseOnly00UTCCandle)
          {
-            g_processed04CandleTime = closedCandleTime;
+            g_processed04CandleTime = closedCandleTime;  // Stores opening time (00:00)
          }
 
          MqlDateTime timeStruct;
@@ -291,6 +307,7 @@ int OnInit()
          LogMessage("Low: " + DoubleToString(g_4HLow, _Digits));
          LogMessage("Close: " + DoubleToString(close, _Digits));
          LogMessage("Range: " + DoubleToString(range, _Digits) + " (" + DoubleToString(range / g_4HLow * 100, 2) + "%)");
+         LogMessage("Volume: " + IntegerToString(volume4H));
 
          LogMessage("--- False Breakout Strategy ---");
          LogMessage("NOW USING 4H CANDLE: " + TimeToString(closedCandleTime, TIME_DATE|TIME_MINUTES) + " UTC");
@@ -307,12 +324,19 @@ int OnInit()
          g_sellReversalConfirmed = false;
          g_sellBreakoutCandleTime = 0;
 
-         // Check if we're in the 00:00 UTC candle formation period (00:00 - 04:00)
+         // Reset volume tracking
+         g_buyBreakoutVolume = 0;
+         g_sellBreakoutVolume = 0;
+         g_averageVolume = 0;
+         g_buyVolumeConfirmed = false;
+         g_sellVolumeConfirmed = false;
+
+         // Check if we're in the first 4H candle formation period (00:00-04:00 UTC)
          if(IsInCandleFormationPeriod())
          {
             g_tradingAllowedToday = false;
-            LogMessage("TRADING SUSPENDED - EA started during 00:00 UTC candle formation (00:00-04:00)");
-            LogMessage("Trading will begin at 04:00 UTC when the candle closes");
+            LogMessage("TRADING SUSPENDED - EA started during first 4H candle formation (00:00-04:00 UTC)");
+            LogMessage("Trading will begin at 04:00 UTC when the candle closes (chart will show 04:00)");
          }
          else
          {
@@ -507,20 +531,22 @@ bool IsNew4HCandle()
       // Update last seen time (even if we skip this candle)
       g_lastSeen4HCandleTime = current4HTime;
 
-      // If filter is enabled, only process 00:00 UTC candles
+      // If filter is enabled, only process first 4H candle of day
+      // NOTE: iTime() returns opening time (00:00), chart displays closing time (04:00)
       if(UseOnly00UTCCandle)
       {
-         // Check if the closed candle is at 00:00 UTC
+         // Check if the closed candle opened at 00:00 UTC (first 4H candle)
          if(timeStruct.hour != 0)
          {
-            LogMessage("SKIPPING: Candle hour is " + IntegerToString(timeStruct.hour) + ":00 UTC (only 00:00 UTC candles are processed)");
+            LogMessage("SKIPPING: Candle opening hour is " + IntegerToString(timeStruct.hour) + ":00 UTC");
+            LogMessage("Only processing first 4H candle (opens 00:00, chart shows 04:00)");
             LogMessage("Updated g_lastSeen4HCandleTime but NOT g_last4HCandleTime");
-            LogMessage("Will check for 00:00 candle on next 4H candle");
             return false;
          }
          else
          {
-            LogMessage("PROCESSING: Candle hour is 00:00 UTC (closes at 04:00) - This candle will be processed");
+            LogMessage("PROCESSING: First 4H candle of day detected");
+            LogMessage("Opening time: 00:00 UTC, Closing time: 04:00 UTC (shown on chart)");
          }
       }
       else
@@ -544,13 +570,15 @@ void Process4HCandle()
    g_4HLow = iLow(_Symbol, PERIOD_H4, 1);
    double open = iOpen(_Symbol, PERIOD_H4, 1);
    double close = iClose(_Symbol, PERIOD_H4, 1);
+   long volume4H = iVolume(_Symbol, PERIOD_H4, 1);
    g_last4HCandleTime = iTime(_Symbol, PERIOD_H4, 0);
 
-   // Store the time of the 00:00 candle we're using
+   // Store the opening time of the first 4H candle we're using
+   // NOTE: iTime() returns opening time (00:00), chart displays closing time (04:00)
    datetime closedCandleTime = iTime(_Symbol, PERIOD_H4, 1);
    if(UseOnly00UTCCandle)
    {
-      g_processed04CandleTime = closedCandleTime;
+      g_processed04CandleTime = closedCandleTime;  // Stores opening time (00:00)
    }
 
    MqlDateTime timeStruct;
@@ -568,6 +596,7 @@ void Process4HCandle()
    LogMessage("Low: " + DoubleToString(g_4HLow, _Digits));
    LogMessage("Close: " + DoubleToString(close, _Digits));
    LogMessage("Range: " + DoubleToString(range, _Digits) + " (" + DoubleToString(range / g_4HLow * 100, 2) + "%)");
+   LogMessage("Volume: " + IntegerToString(volume4H));
 
    LogMessage("--- False Breakout Strategy ---");
    LogMessage("NOW USING 4H CANDLE: " + TimeToString(closedCandleTime, TIME_DATE|TIME_MINUTES) + " UTC");
@@ -584,12 +613,19 @@ void Process4HCandle()
    g_sellReversalConfirmed = false;
    g_sellBreakoutCandleTime = 0;
 
-   // Check if we're in the 00:00 UTC candle formation period (00:00 - 04:00)
+   // Reset volume tracking
+   g_buyBreakoutVolume = 0;
+   g_sellBreakoutVolume = 0;
+   g_averageVolume = 0;
+   g_buyVolumeConfirmed = false;
+   g_sellVolumeConfirmed = false;
+
+   // Check if we're in the first 4H candle formation period (00:00-04:00 UTC)
    if(IsInCandleFormationPeriod())
    {
       g_tradingAllowedToday = false;
-      LogMessage("TRADING SUSPENDED - New 00:00 UTC candle is forming (will close at 04:00)");
-      LogMessage("Trading will resume at 04:00 UTC when this candle closes");
+      LogMessage("TRADING SUSPENDED - First 4H candle is forming (00:00-04:00 UTC)");
+      LogMessage("Trading will resume at 04:00 UTC when candle closes (chart will show 04:00)");
    }
    else
    {
@@ -626,11 +662,11 @@ void MonitorEntries()
       return;
    }
 
-   // Check if we're in the 00:00 UTC candle formation period (00:00 - 04:00)
+   // Check if we're in the first 4H candle formation period (00:00-04:00 UTC)
    if(IsInCandleFormationPeriod())
    {
       if(EnableDetailedLogging)
-         LogMessage("MonitorEntries: Trading suspended - Waiting for 00:00 UTC candle to close at 04:00");
+         LogMessage("MonitorEntries: Trading suspended - Waiting for first 4H candle to close at 04:00 UTC");
       return;
    }
 
@@ -729,10 +765,7 @@ void MonitorEntries()
       // Step 1 & 2: Check if 5-min candle closed BELOW 4H Low (breakout confirmation)
       if(!g_buyBreakoutConfirmed && candle5mClose < g_4HLow)
       {
-         g_buyBreakoutConfirmed = true;
-         g_buyBreakoutCandleTime = candle5mTime;  // Store the time of breakout candle
-
-         LogMessage("*** BUY BREAKOUT CONFIRMED ***");
+         LogMessage("*** BUY BREAKOUT DETECTED ***");
          LogMessage("5-min candle closed BELOW 4H Low");
          LogMessage("Candle Time: " + TimeToString(candle5mTime, TIME_DATE|TIME_MINUTES));
          LogMessage("Candle OHLC: O=" + DoubleToString(candle5mOpen, _Digits) +
@@ -741,7 +774,47 @@ void MonitorEntries()
                     " C=" + DoubleToString(candle5mClose, _Digits));
          LogMessage("Candle Close: " + DoubleToString(candle5mClose, _Digits) + " | 4H Low: " + DoubleToString(g_4HLow, _Digits));
          LogMessage("Breakout Distance: " + DoubleToString(g_4HLow - candle5mClose, _Digits) + " points");
-         LogMessage("Waiting for reversal back above 4H Low...");
+
+         // Check volume confirmation if enabled
+         bool volumeOK = true;
+         if(UseVolumeConfirmation)
+         {
+            LogMessage("--- Checking Volume Confirmation ---");
+
+            // Get volume of the breakout candle (index 1 = last closed candle)
+            g_buyBreakoutVolume = GetCandleVolume(1);
+
+            // Calculate average volume
+            g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
+
+            // Check if volume meets threshold
+            g_buyVolumeConfirmed = IsVolumeConfirmed(g_buyBreakoutVolume, g_averageVolume, VolumeThresholdMultiplier);
+
+            volumeOK = g_buyVolumeConfirmed;
+         }
+         else
+         {
+            LogMessage("Volume confirmation disabled - accepting breakout");
+            g_buyVolumeConfirmed = true;
+         }
+
+         // Only confirm breakout if volume is sufficient (or volume check is disabled)
+         if(volumeOK)
+         {
+            g_buyBreakoutConfirmed = true;
+            g_buyBreakoutCandleTime = candle5mTime;
+            LogMessage("*** BUY BREAKOUT CONFIRMED ***");
+            LogMessage("Waiting for reversal back above 4H Low...");
+         }
+         else
+         {
+            LogMessage("*** BUY BREAKOUT REJECTED - Insufficient Volume ***");
+            LogMessage("Breakout lacks conviction - likely a false breakout");
+            LogMessage("Resetting to wait for next breakout opportunity");
+            // Reset flags so we can check for another breakout
+            g_buyBreakoutConfirmed = false;
+            g_buyVolumeConfirmed = false;
+         }
       }
       else if(!g_buyBreakoutConfirmed && EnableDetailedLogging)
       {
@@ -827,10 +900,7 @@ void MonitorEntries()
       // Step 1 & 2: Check if 5-min candle closed ABOVE 4H High (breakout confirmation)
       if(!g_sellBreakoutConfirmed && candle5mClose > g_4HHigh)
       {
-         g_sellBreakoutConfirmed = true;
-         g_sellBreakoutCandleTime = candle5mTime;  // Store the time of breakout candle
-
-         LogMessage("*** SELL BREAKOUT CONFIRMED ***");
+         LogMessage("*** SELL BREAKOUT DETECTED ***");
          LogMessage("5-min candle closed ABOVE 4H High");
          LogMessage("Candle Time: " + TimeToString(candle5mTime, TIME_DATE|TIME_MINUTES));
          LogMessage("Candle OHLC: O=" + DoubleToString(candle5mOpen, _Digits) +
@@ -839,7 +909,50 @@ void MonitorEntries()
                     " C=" + DoubleToString(candle5mClose, _Digits));
          LogMessage("Candle Close: " + DoubleToString(candle5mClose, _Digits) + " | 4H High: " + DoubleToString(g_4HHigh, _Digits));
          LogMessage("Breakout Distance: " + DoubleToString(candle5mClose - g_4HHigh, _Digits) + " points");
-         LogMessage("Waiting for reversal back below 4H High...");
+
+         // Check volume confirmation if enabled
+         bool volumeOK = true;
+         if(UseVolumeConfirmation)
+         {
+            LogMessage("--- Checking Volume Confirmation ---");
+
+            // Get volume of the breakout candle (index 1 = last closed candle)
+            g_sellBreakoutVolume = GetCandleVolume(1);
+
+            // Calculate average volume (reuse if already calculated for BUY check)
+            if(g_averageVolume <= 0)
+            {
+               g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
+            }
+
+            // Check if volume meets threshold
+            g_sellVolumeConfirmed = IsVolumeConfirmed(g_sellBreakoutVolume, g_averageVolume, VolumeThresholdMultiplier);
+
+            volumeOK = g_sellVolumeConfirmed;
+         }
+         else
+         {
+            LogMessage("Volume confirmation disabled - accepting breakout");
+            g_sellVolumeConfirmed = true;
+         }
+
+         // Only confirm breakout if volume is sufficient (or volume check is disabled)
+         if(volumeOK)
+         {
+            g_sellBreakoutConfirmed = true;
+            g_sellBreakoutCandleTime = candle5mTime;
+            LogMessage("*** SELL BREAKOUT CONFIRMED ***");
+            LogMessage("Waiting for reversal back below 4H High...");
+         }
+         else
+         {
+            LogMessage("*** SELL BREAKOUT REJECTED - Insufficient Volume ***");
+            LogMessage("Breakout lacks conviction - likely a false breakout");
+            LogMessage("Resetting to wait for next breakout opportunity");
+            // Reset flags so we can check for another breakout
+            g_sellBreakoutConfirmed = false;
+            g_sellVolumeConfirmed = false;
+         }
       }
       else if(!g_sellBreakoutConfirmed && EnableDetailedLogging)
       {
@@ -1595,7 +1708,8 @@ bool HasOpenPosition(ENUM_ORDER_TYPE orderType)
 }
 
 //+------------------------------------------------------------------+
-//| Check if in candle formation period (00:00-04:00 UTC)            |
+//| Check if in first 4H candle formation period (00:00-04:00 UTC)   |
+//| This is when the candle is actively forming (not yet closed)     |
 //+------------------------------------------------------------------+
 bool IsInCandleFormationPeriod()
 {
@@ -1921,20 +2035,22 @@ void TrackChartObject(string objectName)
 
 
 //+------------------------------------------------------------------+
-//| Find the most recent 00:00 UTC candle time                       |
+//| Find the most recent first 4H candle of day                      |
+//| NOTE: iTime() returns opening time (00:00)                       |
+//|       Chart displays closing time (04:00)                        |
 //+------------------------------------------------------------------+
 datetime Find00UTCCandle()
 {
    // Search backwards up to 24 hours (6 x 4H candles)
    for(int i = 1; i <= 6; i++)
    {
-      datetime candleTime = iTime(_Symbol, PERIOD_H4, i);
+      datetime candleTime = iTime(_Symbol, PERIOD_H4, i);  // Returns opening time
       MqlDateTime timeStruct;
       TimeToStruct(candleTime, timeStruct);
 
-      if(timeStruct.hour == 0)  // Found a 00:00 UTC candle
+      if(timeStruct.hour == 4)  // Opening time is 00:00 (chart shows 04:00)
       {
-         return candleTime;
+         return candleTime;  // Returns opening time (00:00)
       }
    }
 
@@ -1942,18 +2058,20 @@ datetime Find00UTCCandle()
 }
 
 //+------------------------------------------------------------------+
-//| Find the index of the most recent 00:00 UTC candle               |
+//| Find the index of the most recent first 4H candle of day         |
+//| NOTE: iTime() returns opening time (00:00)                       |
+//|       Chart displays closing time (04:00)                        |
 //+------------------------------------------------------------------+
 int Find00UTCCandleIndex()
 {
    // Search backwards up to 24 hours (6 x 4H candles)
    for(int i = 1; i <= 6; i++)
    {
-      datetime candleTime = iTime(_Symbol, PERIOD_H4, i);
+      datetime candleTime = iTime(_Symbol, PERIOD_H4, i);  // Returns opening time
       MqlDateTime timeStruct;
       TimeToStruct(candleTime, timeStruct);
 
-      if(timeStruct.hour == 0)  // Found a 00:00 UTC candle
+      if(timeStruct.hour == 4)  // Opening time is 00:00 (chart shows 04:00)
       {
          return i;
       }
@@ -1971,12 +2089,13 @@ void Update4HData(int candleIndex)
    g_4HLow = iLow(_Symbol, PERIOD_H4, candleIndex);
    double open = iOpen(_Symbol, PERIOD_H4, candleIndex);
    double close = iClose(_Symbol, PERIOD_H4, candleIndex);
+   long volume4H = iVolume(_Symbol, PERIOD_H4, candleIndex);
    datetime closedCandleTime = iTime(_Symbol, PERIOD_H4, candleIndex);
 
-   // Store which 00:00 candle we're using
+   // Store opening time of first 4H candle (iTime returns opening time)
    if(UseOnly00UTCCandle)
    {
-      g_processed04CandleTime = closedCandleTime;
+      g_processed04CandleTime = closedCandleTime;  // Stores opening time (00:00)
    }
 
    double range = g_4HHigh - g_4HLow;
@@ -1990,6 +2109,7 @@ void Update4HData(int candleIndex)
    LogMessage("High: " + DoubleToString(g_4HHigh, _Digits));
    LogMessage("Low: " + DoubleToString(g_4HLow, _Digits));
    LogMessage("Range: " + DoubleToString(range, _Digits) + " (" + DoubleToString(range / g_4HLow * 100, 2) + "%)");
+   LogMessage("Volume: " + IntegerToString(volume4H));
 
    // Reset tracking
    g_buyOrderPlaced = false;
@@ -2000,6 +2120,13 @@ void Update4HData(int candleIndex)
    g_sellBreakoutConfirmed = false;
    g_sellReversalConfirmed = false;
    g_sellBreakoutCandleTime = 0;
+
+   // Reset volume tracking
+   g_buyBreakoutVolume = 0;
+   g_sellBreakoutVolume = 0;
+   g_averageVolume = 0;
+   g_buyVolumeConfirmed = false;
+   g_sellVolumeConfirmed = false;
 
    // Enable trading after updating 4H data
    g_tradingAllowedToday = true;
@@ -2285,6 +2412,99 @@ double FindHighestHighInRange(datetime startTime, datetime endTime)
    }
 
    return highestHigh;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate average volume over a specified period                 |
+//+------------------------------------------------------------------+
+double CalculateAverageVolume(int period)
+{
+   if(period <= 0)
+   {
+      LogMessage("ERROR: Invalid period for volume calculation: " + IntegerToString(period));
+      return 0;
+   }
+
+   // Get volume data for the specified period
+   // We use index 1 to start from the last closed candle
+   long volumes[];
+   int copied = CopyTickVolume(_Symbol, PERIOD_M5, 1, period, volumes);
+
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy volume data. Error: " + IntegerToString(GetLastError()));
+      return 0;
+   }
+
+   // Calculate average
+   long totalVolume = 0;
+   for(int i = 0; i < copied; i++)
+   {
+      totalVolume += volumes[i];
+   }
+
+   double avgVolume = (double)totalVolume / copied;
+
+   if(EnableDetailedLogging)
+   {
+      LogMessage("Volume Analysis:");
+      LogMessage("  Period: " + IntegerToString(period) + " candles");
+      LogMessage("  Candles copied: " + IntegerToString(copied));
+      LogMessage("  Total volume: " + IntegerToString(totalVolume));
+      LogMessage("  Average volume: " + DoubleToString(avgVolume, 0));
+   }
+
+   return avgVolume;
+}
+
+//+------------------------------------------------------------------+
+//| Get volume for a specific candle by index                        |
+//+------------------------------------------------------------------+
+long GetCandleVolume(int candleIndex)
+{
+   long volume = iVolume(_Symbol, PERIOD_M5, candleIndex);
+
+   if(volume < 0)
+   {
+      LogMessage("ERROR: Failed to get volume for candle index " + IntegerToString(candleIndex));
+      return 0;
+   }
+
+   return volume;
+}
+
+//+------------------------------------------------------------------+
+//| Check if breakout volume meets the threshold requirement         |
+//+------------------------------------------------------------------+
+bool IsVolumeConfirmed(long breakoutVolume, double averageVolume, double threshold)
+{
+   if(averageVolume <= 0)
+   {
+      LogMessage("WARNING: Average volume is zero or negative - cannot confirm volume");
+      return false;
+   }
+
+   double volumeRatio = (double)breakoutVolume / averageVolume;
+   bool confirmed = volumeRatio >= threshold;
+
+   LogMessage("=== Volume Confirmation Check ===");
+   LogMessage("Breakout Volume: " + IntegerToString(breakoutVolume));
+   LogMessage("Average Volume: " + DoubleToString(averageVolume, 0));
+   LogMessage("Volume Ratio: " + DoubleToString(volumeRatio, 2) + "x");
+   LogMessage("Required Threshold: " + DoubleToString(threshold, 2) + "x");
+   LogMessage("Volume Confirmed: " + (confirmed ? "YES" : "NO"));
+
+   if(!confirmed)
+   {
+      LogMessage(">>> VOLUME TOO LOW - Breakout lacks conviction <<<");
+      LogMessage(">>> This may be a false breakout - skipping trade <<<");
+   }
+   else
+   {
+      LogMessage(">>> VOLUME CONFIRMED - Strong breakout conviction <<<");
+   }
+
+   return confirmed;
 }
 
 
