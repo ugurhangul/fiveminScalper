@@ -55,6 +55,14 @@ input int      AdaptiveLossTrigger = 3;         // Consecutive losses to activat
 input int      AdaptiveWinRecovery = 2;         // Consecutive wins to deactivate filters (auto-adjusted per symbol)
 input bool     StartWithFiltersEnabled = false; // Start with filters enabled (true) or disabled (false)
 
+input group "=== Symbol-Level Adaptation ==="
+input bool     UseSymbolAdaptation = true;      // Enable symbol-level adaptive system
+input int      SymbolMinTrades = 10;            // Min trades before evaluation
+input double   SymbolMinWinRate = 30.0;         // Min win rate % to stay enabled
+input double   SymbolMaxLoss = -100.0;          // Max loss $ before disabling symbol
+input int      SymbolMaxConsecutiveLosses = 5;  // Max consecutive losses per symbol
+input int      SymbolCoolingPeriodDays = 7;     // Days before auto re-enable
+
 input group "=== Volume Confirmation ==="
 input double   BreakoutVolumeMaxMultiplier = 1.0; // Max volume for initial breakout (weak breakout = good)
 input double   ReversalVolumeMinMultiplier = 1.5; // Min volume for reversal (strong reversal = good)
@@ -114,6 +122,23 @@ struct SymbolParameters
    int    adaptiveWinRecovery;    // Wins to deactivate filters
 };
 
+//+------------------------------------------------------------------+
+//| Symbol-Level Performance Statistics                               |
+//+------------------------------------------------------------------+
+struct SymbolStats
+{
+   int      totalTrades;          // Total trades on this symbol
+   int      winningTrades;        // Winning trades
+   int      losingTrades;         // Losing trades
+   double   totalProfit;          // Total profit
+   double   totalLoss;            // Total loss
+   int      consecutiveLosses;    // Current consecutive losses
+   int      consecutiveWins;      // Current consecutive wins
+   bool     isEnabled;            // Is symbol currently enabled?
+   datetime disabledTime;         // When was it disabled?
+   string   disableReason;        // Why was it disabled?
+};
+
 //--- Global Variables
 datetime g_last4HCandleTime = 0;               // Last processed 4H candle time (for trading)
 datetime g_lastSeen4HCandleTime = 0;           // Last seen 4H candle time (including skipped ones)
@@ -170,6 +195,9 @@ bool     g_activeDivergenceConfirmation = false; // Current active divergence co
 ENUM_SYMBOL_CATEGORY g_symbolCategory = SYMBOL_UNKNOWN; // Detected symbol category
 SymbolParameters     g_symbolParams;           // Active symbol-specific parameters
 SymbolParameters     g_defaultParams;          // Default parameters from inputs
+
+// Symbol-level adaptive system
+SymbolStats          g_symbolStats;            // Performance statistics for current symbol
 
 // Breakeven tracking to prevent redundant checks
 ulong    g_breakevenSetTickets[];              // Array of tickets that already have breakeven set
@@ -381,6 +409,23 @@ int OnInit()
    {
       LogMessage("Adaptive Filter System: DISABLED");
       LogMessage("  Filters permanently: " + (StartWithFiltersEnabled ? "ENABLED" : "DISABLED"));
+   }
+
+   // Initialize symbol-level adaptive system
+   InitializeSymbolStats();
+
+   if(UseSymbolAdaptation)
+   {
+      LogMessage("Symbol-Level Adaptation: ENABLED");
+      LogMessage("  Min Trades for Evaluation: " + IntegerToString(SymbolMinTrades));
+      LogMessage("  Min Win Rate: " + DoubleToString(SymbolMinWinRate, 1) + "%");
+      LogMessage("  Max Loss Threshold: $" + DoubleToString(SymbolMaxLoss, 2));
+      LogMessage("  Max Consecutive Losses: " + IntegerToString(SymbolMaxConsecutiveLosses));
+      LogMessage("  Cooling Period: " + IntegerToString(SymbolCoolingPeriodDays) + " days");
+   }
+   else
+   {
+      LogMessage("Symbol-Level Adaptation: DISABLED");
    }
 
    LogMessage("Initialization successful - EA is ready to trade");
@@ -1140,6 +1185,17 @@ void MonitorEntries()
          LogMessage("*** BUY REVERSAL CONFIRMED (High Volume) ***");
          LogMessage("FALSE BREAKOUT PATTERN COMPLETE - Executing BUY order");
 
+         // Check if symbol is enabled for trading
+         if(!IsSymbolEnabled())
+         {
+            LogMessage("TRADE BLOCKED: Symbol " + _Symbol + " is currently disabled");
+            LogMessage("Reason: " + g_symbolStats.disableReason);
+            LogMessage("Resetting BUY signal tracking");
+            g_buyBreakoutConfirmed = false;
+            g_buyReversalConfirmed = false;
+            return;
+         }
+
          // Execute buy order using optimized SL calculation
          if(ExecuteBuyOrder(lowestLow, g_buyBreakoutCandleTime, candle5mTime))
          {
@@ -1371,6 +1427,17 @@ void MonitorEntries()
          LogMessage("HIGHEST High in pattern: " + DoubleToString(highestHigh, _Digits));
          LogMessage("*** SELL REVERSAL CONFIRMED (High Volume) ***");
          LogMessage("FALSE BREAKOUT PATTERN COMPLETE - Executing SELL order");
+
+         // Check if symbol is enabled for trading
+         if(!IsSymbolEnabled())
+         {
+            LogMessage("TRADE BLOCKED: Symbol " + _Symbol + " is currently disabled");
+            LogMessage("Reason: " + g_symbolStats.disableReason);
+            LogMessage("Resetting SELL signal tracking");
+            g_sellBreakoutConfirmed = false;
+            g_sellReversalConfirmed = false;
+            return;
+         }
 
          // Execute sell order using optimized SL calculation
          if(ExecuteSellOrder(highestHigh, g_sellBreakoutCandleTime, candle5mTime))
@@ -3466,7 +3533,8 @@ bool DetectBearishMACDDivergence()
 //+------------------------------------------------------------------+
 void ProcessClosedTrade(ulong positionId)
 {
-   if(!UseAdaptiveFilters)
+   // Skip if both adaptive systems are disabled
+   if(!UseAdaptiveFilters && !UseSymbolAdaptation)
       return;
 
    // Avoid processing the same trade twice
@@ -3508,13 +3576,19 @@ void ProcessClosedTrade(ulong positionId)
    // Determine if trade was a win or loss
    bool isWin = (totalPnL > 0);
 
-   LogMessage("=== ADAPTIVE FILTER: Trade Closed ===");
+   LogMessage("=== TRADE CLOSED ===");
    LogMessage("Position ID: " + IntegerToString(positionId));
    LogMessage("Profit: " + DoubleToString(totalProfit, 2));
    LogMessage("Swap: " + DoubleToString(totalSwap, 2));
    LogMessage("Commission: " + DoubleToString(totalCommission, 2));
    LogMessage("Total P&L: " + DoubleToString(totalPnL, 2));
    LogMessage("Result: " + (isWin ? "WIN" : "LOSS"));
+
+   // Update symbol-level statistics
+   UpdateSymbolStats(isWin, totalPnL);
+
+   // Evaluate symbol performance and disable if needed
+   EvaluateSymbolPerformance();
 
    if(isWin)
    {
@@ -3995,5 +4069,223 @@ void ApplySymbolParameters()
    LogMessage("  Win Recovery:     " + IntegerToString(g_symbolParams.adaptiveWinRecovery) +
               " (default: " + IntegerToString(g_defaultParams.adaptiveWinRecovery) + ")");
    LogMessage("════════════════════════════════════════════════════════════");
+}
+
+//+------------------------------------------------------------------+
+//| Initialize Symbol Statistics                                      |
+//+------------------------------------------------------------------+
+void InitializeSymbolStats()
+{
+   g_symbolStats.totalTrades = 0;
+   g_symbolStats.winningTrades = 0;
+   g_symbolStats.losingTrades = 0;
+   g_symbolStats.totalProfit = 0.0;
+   g_symbolStats.totalLoss = 0.0;
+   g_symbolStats.consecutiveLosses = 0;
+   g_symbolStats.consecutiveWins = 0;
+   g_symbolStats.isEnabled = true;  // Start enabled
+   g_symbolStats.disabledTime = 0;
+   g_symbolStats.disableReason = "";
+
+   LogMessage("Symbol statistics initialized for " + _Symbol);
+}
+
+//+------------------------------------------------------------------+
+//| Update Symbol Statistics After Trade                              |
+//+------------------------------------------------------------------+
+void UpdateSymbolStats(bool isWin, double profit)
+{
+   if(!UseSymbolAdaptation)
+      return;
+
+   g_symbolStats.totalTrades++;
+
+   if(isWin)
+   {
+      g_symbolStats.winningTrades++;
+      g_symbolStats.totalProfit += profit;
+      g_symbolStats.consecutiveLosses = 0;
+      g_symbolStats.consecutiveWins++;
+   }
+   else
+   {
+      g_symbolStats.losingTrades++;
+      g_symbolStats.totalLoss += MathAbs(profit);
+      g_symbolStats.consecutiveWins = 0;
+      g_symbolStats.consecutiveLosses++;
+   }
+
+   // Log updated statistics
+   double winRate = (g_symbolStats.totalTrades > 0) ?
+                    (g_symbolStats.winningTrades * 100.0 / g_symbolStats.totalTrades) : 0.0;
+   double netProfit = g_symbolStats.totalProfit - g_symbolStats.totalLoss;
+
+   LogMessage("Symbol Stats Updated (" + _Symbol + "):");
+   LogMessage("  Total Trades: " + IntegerToString(g_symbolStats.totalTrades));
+   LogMessage("  Win Rate: " + DoubleToString(winRate, 1) + "% (" +
+              IntegerToString(g_symbolStats.winningTrades) + "W / " +
+              IntegerToString(g_symbolStats.losingTrades) + "L)");
+   LogMessage("  Net P&L: $" + DoubleToString(netProfit, 2));
+   LogMessage("  Consecutive: " + (isWin ?
+              IntegerToString(g_symbolStats.consecutiveWins) + " wins" :
+              IntegerToString(g_symbolStats.consecutiveLosses) + " losses"));
+}
+
+//+------------------------------------------------------------------+
+//| Evaluate Symbol Performance and Disable if Needed                 |
+//+------------------------------------------------------------------+
+void EvaluateSymbolPerformance()
+{
+   if(!UseSymbolAdaptation || !g_symbolStats.isEnabled)
+      return;
+
+   // Need minimum trades before evaluation
+   if(g_symbolStats.totalTrades < SymbolMinTrades)
+      return;
+
+   bool shouldDisable = false;
+   string reason = "";
+
+   // Check 1: Win rate too low
+   double winRate = (g_symbolStats.winningTrades * 100.0 / g_symbolStats.totalTrades);
+   if(winRate < SymbolMinWinRate)
+   {
+      shouldDisable = true;
+      reason = "Win rate " + DoubleToString(winRate, 1) + "% below " +
+               DoubleToString(SymbolMinWinRate, 1) + "% threshold";
+   }
+
+   // Check 2: Total loss exceeds threshold
+   double netProfit = g_symbolStats.totalProfit - g_symbolStats.totalLoss;
+   if(netProfit < SymbolMaxLoss)
+   {
+      shouldDisable = true;
+      reason = "Total loss $" + DoubleToString(netProfit, 2) + " exceeds $" +
+               DoubleToString(SymbolMaxLoss, 2) + " threshold";
+   }
+
+   // Check 3: Too many consecutive losses
+   if(g_symbolStats.consecutiveLosses >= SymbolMaxConsecutiveLosses)
+   {
+      shouldDisable = true;
+      reason = IntegerToString(g_symbolStats.consecutiveLosses) + " consecutive losses (threshold: " +
+               IntegerToString(SymbolMaxConsecutiveLosses) + ")";
+   }
+
+   if(shouldDisable)
+   {
+      DisableSymbol(reason);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Disable Symbol Trading                                            |
+//+------------------------------------------------------------------+
+void DisableSymbol(string reason)
+{
+   g_symbolStats.isEnabled = false;
+   g_symbolStats.disabledTime = TimeCurrent();
+   g_symbolStats.disableReason = reason;
+
+   double winRate = (g_symbolStats.totalTrades > 0) ?
+                    (g_symbolStats.winningTrades * 100.0 / g_symbolStats.totalTrades) : 0.0;
+   double netProfit = g_symbolStats.totalProfit - g_symbolStats.totalLoss;
+
+   datetime reEnableDate = g_symbolStats.disabledTime + (SymbolCoolingPeriodDays * 86400);
+
+   // Create padding string
+   string padding = "";
+   int paddingLength = 42 - StringLen(_Symbol);
+   for(int i = 0; i < paddingLength; i++)
+      padding += " ";
+
+   LogMessage("╔════════════════════════════════════════════════════════════╗");
+   LogMessage("║  SYMBOL DISABLED: " + _Symbol + padding + "║");
+   LogMessage("╚════════════════════════════════════════════════════════════╝");
+   LogMessage("Reason: " + reason);
+   LogMessage("");
+   LogMessage("Statistics:");
+   LogMessage("  Total Trades: " + IntegerToString(g_symbolStats.totalTrades));
+   LogMessage("  Wins: " + IntegerToString(g_symbolStats.winningTrades) + " (" + DoubleToString(winRate, 1) + "%)");
+   LogMessage("  Losses: " + IntegerToString(g_symbolStats.losingTrades) + " (" + DoubleToString(100.0 - winRate, 1) + "%)");
+   LogMessage("  Total P&L: $" + DoubleToString(netProfit, 2));
+   LogMessage("  Consecutive Losses: " + IntegerToString(g_symbolStats.consecutiveLosses));
+   LogMessage("");
+   LogMessage("Cooling Period: " + IntegerToString(SymbolCoolingPeriodDays) + " days");
+   LogMessage("Re-enable Date: " + TimeToString(reEnableDate, TIME_DATE));
+   LogMessage("════════════════════════════════════════════════════════════");
+}
+
+//+------------------------------------------------------------------+
+//| Check if Symbol is Enabled for Trading                            |
+//+------------------------------------------------------------------+
+bool IsSymbolEnabled()
+{
+   if(!UseSymbolAdaptation)
+      return true;  // If system disabled, always allow trading
+
+   // Check if symbol is currently disabled
+   if(!g_symbolStats.isEnabled)
+   {
+      // Check if cooling period has expired
+      CheckSymbolCoolingPeriod();
+
+      // Return current status
+      return g_symbolStats.isEnabled;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Check Cooling Period and Re-enable if Expired                     |
+//+------------------------------------------------------------------+
+void CheckSymbolCoolingPeriod()
+{
+   if(!UseSymbolAdaptation || g_symbolStats.isEnabled)
+      return;
+
+   datetime currentTime = TimeCurrent();
+   datetime coolingEndTime = g_symbolStats.disabledTime + (SymbolCoolingPeriodDays * 86400);
+
+   if(currentTime >= coolingEndTime)
+   {
+      // Re-enable symbol
+      g_symbolStats.isEnabled = true;
+
+      // Reset statistics for fresh start
+      int oldTotalTrades = g_symbolStats.totalTrades;
+      double oldNetProfit = g_symbolStats.totalProfit - g_symbolStats.totalLoss;
+
+      g_symbolStats.totalTrades = 0;
+      g_symbolStats.winningTrades = 0;
+      g_symbolStats.losingTrades = 0;
+      g_symbolStats.totalProfit = 0.0;
+      g_symbolStats.totalLoss = 0.0;
+      g_symbolStats.consecutiveLosses = 0;
+      g_symbolStats.consecutiveWins = 0;
+
+      // Create padding string
+      string padding2 = "";
+      int paddingLength2 = 39 - StringLen(_Symbol);
+      for(int i = 0; i < paddingLength2; i++)
+         padding2 += " ";
+
+      LogMessage("╔════════════════════════════════════════════════════════════╗");
+      LogMessage("║  SYMBOL RE-ENABLED: " + _Symbol + padding2 + "║");
+      LogMessage("╚════════════════════════════════════════════════════════════╝");
+      LogMessage("Reason: Cooling period expired (" + IntegerToString(SymbolCoolingPeriodDays) + " days)");
+      LogMessage("");
+      LogMessage("Previous Performance:");
+      LogMessage("  Total Trades: " + IntegerToString(oldTotalTrades));
+      LogMessage("  Net P&L: $" + DoubleToString(oldNetProfit, 2));
+      LogMessage("  Disable Reason: " + g_symbolStats.disableReason);
+      LogMessage("");
+      LogMessage("Statistics: RESET");
+      LogMessage("Status: Ready to trade");
+      LogMessage("════════════════════════════════════════════════════════════");
+
+      g_symbolStats.disableReason = "";
+   }
 }
 
