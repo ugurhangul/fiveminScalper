@@ -45,10 +45,24 @@ input bool     ExportCandleData = false;       // Export candle data to CSV for 
 input group "=== Debug Settings ==="
 input bool     LogActiveTradesEvery5Min = true; // Log all active trades every 5-min candle
 
+input group "=== Adaptive Filter System ==="
+input bool     UseAdaptiveFilters = true;       // Enable adaptive filter system
+input int      AdaptiveLossTrigger = 3;         // Consecutive losses to activate filters
+input int      AdaptiveWinRecovery = 2;         // Consecutive wins to deactivate filters
+input bool     StartWithFiltersEnabled = false; // Start with filters enabled (true) or disabled (false)
+
 input group "=== Volume Confirmation ==="
-input bool     UseVolumeConfirmation = true;    // Enable volume confirmation for breakouts
-input double   VolumeThresholdMultiplier = 1.5; // Volume threshold (x times average)
+input double   BreakoutVolumeMaxMultiplier = 1.0; // Max volume for initial breakout (weak breakout = good)
+input double   ReversalVolumeMinMultiplier = 1.5; // Min volume for reversal (strong reversal = good)
 input int      VolumeAveragePeriod = 20;        // Period for volume moving average
+
+input group "=== Divergence Confirmation ==="
+input bool     RequireBothIndicators = false;   // Require BOTH RSI and MACD divergence (stricter)
+input int      RSI_Period = 14;                 // RSI period
+input int      MACD_Fast = 12;                  // MACD fast EMA period
+input int      MACD_Slow = 26;                  // MACD slow EMA period
+input int      MACD_Signal = 9;                 // MACD signal period
+input int      DivergenceLookback = 20;         // Candles to look back for swing points
 
 input group "=== Visual Settings ==="
 input bool     ShowLevelsOnChart = true;       // Draw levels on chart
@@ -83,11 +97,33 @@ bool     g_sellReversalConfirmed = false;      // 5min candle closed below 4H Hi
 datetime g_sellBreakoutCandleTime = 0;         // Time of the breakout candle
 
 // Volume confirmation tracking
-long     g_buyBreakoutVolume = 0;              // Volume of the BUY breakout candle
-long     g_sellBreakoutVolume = 0;             // Volume of the SELL breakout candle
+long     g_buyBreakoutVolume = 0;              // Volume of the BUY breakout candle (should be LOW)
+long     g_buyReversalVolume = 0;              // Volume of the BUY reversal candle (should be HIGH)
+long     g_sellBreakoutVolume = 0;             // Volume of the SELL breakout candle (should be LOW)
+long     g_sellReversalVolume = 0;             // Volume of the SELL reversal candle (should be HIGH)
 double   g_averageVolume = 0;                  // Average volume over reference period
-bool     g_buyVolumeConfirmed = false;         // BUY breakout has sufficient volume
-bool     g_sellVolumeConfirmed = false;        // SELL breakout has sufficient volume
+bool     g_buyBreakoutVolumeOK = false;        // BUY breakout has LOW volume (weak = good)
+bool     g_buyReversalVolumeOK = false;        // BUY reversal has HIGH volume (strong = good)
+bool     g_sellBreakoutVolumeOK = false;       // SELL breakout has LOW volume (weak = good)
+bool     g_sellReversalVolumeOK = false;       // SELL reversal has HIGH volume (strong = good)
+
+// Divergence confirmation tracking
+int      g_rsiHandle = INVALID_HANDLE;         // RSI indicator handle
+int      g_macdHandle = INVALID_HANDLE;        // MACD indicator handle
+bool     g_buyDivergenceOK = false;            // BUY breakout shows bullish divergence (weak momentum = good)
+bool     g_sellDivergenceOK = false;           // SELL breakout shows bearish divergence (weak momentum = good)
+
+// Adaptive filter system tracking
+bool     g_adaptiveModeActive = false;         // Is adaptive mode currently active?
+int      g_consecutiveLosses = 0;              // Current consecutive loss count
+int      g_consecutiveWins = 0;                // Current consecutive win count (when adaptive mode is active)
+bool     g_originalVolumeConfirmation = false; // Original/starting volume confirmation state
+bool     g_originalDivergenceConfirmation = false; // Original/starting divergence confirmation state
+ulong    g_lastClosedTicket = 0;               // Last closed trade ticket (to avoid double-counting)
+
+// Working filter variables (can be modified by adaptive system)
+bool     g_activeVolumeConfirmation = false;   // Current active volume confirmation setting
+bool     g_activeDivergenceConfirmation = false; // Current active divergence confirmation setting
 
 // Breakeven tracking to prevent redundant checks
 ulong    g_breakevenSetTickets[];              // Array of tickets that already have breakeven set
@@ -225,6 +261,53 @@ int OnInit()
    LogMessage("  Max Lot: " + DoubleToString(g_symbolMaxLot, 2));
    LogMessage("  Lot Step: " + DoubleToString(g_symbolLotStep, 2));
 
+   // Initialize RSI and MACD indicators (always needed for adaptive system)
+   LogMessage("Initializing divergence indicators...");
+
+   // Create RSI indicator on 5-minute timeframe
+   g_rsiHandle = iRSI(_Symbol, PERIOD_M5, RSI_Period, PRICE_CLOSE);
+   if(g_rsiHandle == INVALID_HANDLE)
+   {
+      LogMessage("ERROR: Failed to create RSI indicator");
+      return(INIT_FAILED);
+   }
+
+   // Create MACD indicator on 5-minute timeframe
+   g_macdHandle = iMACD(_Symbol, PERIOD_M5, MACD_Fast, MACD_Slow, MACD_Signal, PRICE_CLOSE);
+   if(g_macdHandle == INVALID_HANDLE)
+   {
+      LogMessage("ERROR: Failed to create MACD indicator");
+      return(INIT_FAILED);
+   }
+
+   LogMessage("Divergence indicators initialized successfully");
+   LogMessage("  RSI Period: " + IntegerToString(RSI_Period));
+   LogMessage("  MACD: " + IntegerToString(MACD_Fast) + ", " + IntegerToString(MACD_Slow) + ", " + IntegerToString(MACD_Signal));
+   LogMessage("  Divergence Lookback: " + IntegerToString(DivergenceLookback) + " candles");
+   LogMessage("  Require Both Indicators: " + (RequireBothIndicators ? "Yes" : "No"));
+
+   // Initialize filter settings for adaptive system
+   // Store the starting state as the "original" state to restore to
+   g_originalVolumeConfirmation = StartWithFiltersEnabled;
+   g_originalDivergenceConfirmation = StartWithFiltersEnabled;
+   g_activeVolumeConfirmation = StartWithFiltersEnabled;
+   g_activeDivergenceConfirmation = StartWithFiltersEnabled;
+
+   if(UseAdaptiveFilters)
+   {
+      LogMessage("Adaptive Filter System: ENABLED");
+      LogMessage("  Loss Trigger: " + IntegerToString(AdaptiveLossTrigger) + " consecutive losses");
+      LogMessage("  Win Recovery: " + IntegerToString(AdaptiveWinRecovery) + " consecutive wins");
+      LogMessage("  Starting State: Filters " + (StartWithFiltersEnabled ? "ENABLED" : "DISABLED"));
+      LogMessage("  When filters activate: Volume AND Divergence confirmation required");
+      LogMessage("  When filters deactivate: Return to starting state (" + (StartWithFiltersEnabled ? "Enabled" : "Disabled") + ")");
+   }
+   else
+   {
+      LogMessage("Adaptive Filter System: DISABLED");
+      LogMessage("  Filters permanently: " + (StartWithFiltersEnabled ? "ENABLED" : "DISABLED"));
+   }
+
    LogMessage("Initialization successful - EA is ready to trade");
 
    // Initialize with current 4H candle on startup
@@ -326,17 +409,23 @@ int OnInit()
 
          // Reset volume tracking
          g_buyBreakoutVolume = 0;
+         g_buyReversalVolume = 0;
          g_sellBreakoutVolume = 0;
+         g_sellReversalVolume = 0;
          g_averageVolume = 0;
-         g_buyVolumeConfirmed = false;
-         g_sellVolumeConfirmed = false;
+         g_buyBreakoutVolumeOK = false;
+         g_buyReversalVolumeOK = false;
+         g_sellBreakoutVolumeOK = false;
+         g_sellReversalVolumeOK = false;
+         g_buyDivergenceOK = false;
+         g_sellDivergenceOK = false;
 
-         // Check if we're in the first 4H candle formation period (00:00-04:00 UTC)
+         // Check if we're in the restricted trading period (00:00-08:00 UTC)
          if(IsInCandleFormationPeriod())
          {
             g_tradingAllowedToday = false;
-            LogMessage("TRADING SUSPENDED - EA started during first 4H candle formation (00:00-04:00 UTC)");
-            LogMessage("Trading will begin at 04:00 UTC when the candle closes (chart will show 04:00)");
+            LogMessage("TRADING SUSPENDED - EA started during restricted period (00:00-08:00 UTC)");
+            LogMessage("Trading will begin at 08:00 UTC after both 4H candles have closed");
          }
          else
          {
@@ -390,6 +479,19 @@ void OnDeinit(const int reason)
 
    LogMessage("Reason: " + reasonText);
    LogMessage("Total open positions: " + IntegerToString(PositionsTotal()));
+
+   // Release indicator handles
+   if(g_rsiHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_rsiHandle);
+      g_rsiHandle = INVALID_HANDLE;
+   }
+
+   if(g_macdHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_macdHandle);
+      g_macdHandle = INVALID_HANDLE;
+   }
 
    // Remove all chart objects created by this EA
    DeleteAllChartObjects();
@@ -468,6 +570,9 @@ void OnTick()
 
       // Clean up closed positions from breakeven tracking list
       CleanupClosedPositions();
+
+      // Check for closed positions and update adaptive filter system
+      CheckForClosedPositions();
    }
 
    // Manage open positions (only if breakeven or trailing stop is enabled and there are positions)
@@ -615,17 +720,23 @@ void Process4HCandle()
 
    // Reset volume tracking
    g_buyBreakoutVolume = 0;
+   g_buyReversalVolume = 0;
    g_sellBreakoutVolume = 0;
+   g_sellReversalVolume = 0;
    g_averageVolume = 0;
-   g_buyVolumeConfirmed = false;
-   g_sellVolumeConfirmed = false;
+   g_buyBreakoutVolumeOK = false;
+   g_buyReversalVolumeOK = false;
+   g_sellBreakoutVolumeOK = false;
+   g_sellReversalVolumeOK = false;
+   g_buyDivergenceOK = false;
+   g_sellDivergenceOK = false;
 
-   // Check if we're in the first 4H candle formation period (00:00-04:00 UTC)
+   // Check if we're in the restricted trading period (00:00-08:00 UTC)
    if(IsInCandleFormationPeriod())
    {
       g_tradingAllowedToday = false;
-      LogMessage("TRADING SUSPENDED - First 4H candle is forming (00:00-04:00 UTC)");
-      LogMessage("Trading will resume at 04:00 UTC when candle closes (chart will show 04:00)");
+      LogMessage("TRADING SUSPENDED - Restricted trading period (00:00-08:00 UTC)");
+      LogMessage("Trading will resume at 08:00 UTC after both 4H candles have closed");
    }
    else
    {
@@ -662,11 +773,11 @@ void MonitorEntries()
       return;
    }
 
-   // Check if we're in the first 4H candle formation period (00:00-04:00 UTC)
+   // Check if we're in the restricted trading period (00:00-08:00 UTC)
    if(IsInCandleFormationPeriod())
    {
       if(EnableDetailedLogging)
-         LogMessage("MonitorEntries: Trading suspended - Waiting for first 4H candle to close at 04:00 UTC");
+         LogMessage("MonitorEntries: Trading suspended - Restricted period (00:00-08:00 UTC)");
       return;
    }
 
@@ -775,11 +886,11 @@ void MonitorEntries()
          LogMessage("Candle Close: " + DoubleToString(candle5mClose, _Digits) + " | 4H Low: " + DoubleToString(g_4HLow, _Digits));
          LogMessage("Breakout Distance: " + DoubleToString(g_4HLow - candle5mClose, _Digits) + " points");
 
-         // Check volume confirmation if enabled
+         // Check volume confirmation if enabled - want LOW volume on breakout
          bool volumeOK = true;
-         if(UseVolumeConfirmation)
+         if(g_activeVolumeConfirmation)
          {
-            LogMessage("--- Checking Volume Confirmation ---");
+            LogMessage("--- Checking Breakout Volume (Want LOW) ---");
 
             // Get volume of the breakout candle (index 1 = last closed candle)
             g_buyBreakoutVolume = GetCandleVolume(1);
@@ -787,33 +898,82 @@ void MonitorEntries()
             // Calculate average volume
             g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
 
-            // Check if volume meets threshold
-            g_buyVolumeConfirmed = IsVolumeConfirmed(g_buyBreakoutVolume, g_averageVolume, VolumeThresholdMultiplier);
+            // Check if breakout volume is LOW (weak breakout = good for false breakout strategy)
+            g_buyBreakoutVolumeOK = IsBreakoutVolumeLow(g_buyBreakoutVolume, g_averageVolume, BreakoutVolumeMaxMultiplier);
 
-            volumeOK = g_buyVolumeConfirmed;
+            volumeOK = g_buyBreakoutVolumeOK;
          }
          else
          {
             LogMessage("Volume confirmation disabled - accepting breakout");
-            g_buyVolumeConfirmed = true;
+            g_buyBreakoutVolumeOK = true;
          }
 
-         // Only confirm breakout if volume is sufficient (or volume check is disabled)
-         if(volumeOK)
+         // Check divergence confirmation if volume is OK
+         bool divergenceOK = true;
+         if(volumeOK && g_activeDivergenceConfirmation)
+         {
+            LogMessage("--- Checking Divergence (Want Bullish) ---");
+
+            bool rsiDivergence = DetectBullishRSIDivergence();
+            bool macdDivergence = DetectBullishMACDDivergence();
+
+            // Determine if divergence requirement is met
+            if(RequireBothIndicators)
+            {
+               // Strict mode: require BOTH RSI and MACD divergence
+               divergenceOK = (rsiDivergence && macdDivergence);
+               g_buyDivergenceOK = divergenceOK;
+
+               if(divergenceOK)
+                  LogMessage("BOTH RSI and MACD show bullish divergence - CONFIRMED");
+               else
+                  LogMessage("Divergence requirement NOT met (need both RSI and MACD)");
+            }
+            else
+            {
+               // Lenient mode: require EITHER RSI or MACD divergence
+               divergenceOK = (rsiDivergence || macdDivergence);
+               g_buyDivergenceOK = divergenceOK;
+
+               if(divergenceOK)
+                  LogMessage("At least one indicator shows bullish divergence - CONFIRMED");
+               else
+                  LogMessage("No divergence detected on either RSI or MACD");
+            }
+         }
+         else if(!g_activeDivergenceConfirmation)
+         {
+            LogMessage("Divergence confirmation disabled - accepting breakout");
+            g_buyDivergenceOK = true;
+         }
+
+         // Only confirm breakout if BOTH volume and divergence are OK
+         if(volumeOK && divergenceOK)
          {
             g_buyBreakoutConfirmed = true;
             g_buyBreakoutCandleTime = candle5mTime;
-            LogMessage("*** BUY BREAKOUT CONFIRMED ***");
+            LogMessage("*** BUY BREAKOUT CONFIRMED (Low Volume + Bullish Divergence) ***");
             LogMessage("Waiting for reversal back above 4H Low...");
          }
          else
          {
-            LogMessage("*** BUY BREAKOUT REJECTED - Insufficient Volume ***");
-            LogMessage("Breakout lacks conviction - likely a false breakout");
+            if(!volumeOK)
+            {
+               LogMessage("*** BUY BREAKOUT REJECTED - Volume Too High ***");
+               LogMessage("Strong breakout likely to continue - not ideal for false breakout");
+            }
+            if(!divergenceOK)
+            {
+               LogMessage("*** BUY BREAKOUT REJECTED - No Bullish Divergence ***");
+               LogMessage("Strong momentum suggests true breakout - not ideal for reversal");
+            }
+
             LogMessage("Resetting to wait for next breakout opportunity");
             // Reset flags so we can check for another breakout
             g_buyBreakoutConfirmed = false;
-            g_buyVolumeConfirmed = false;
+            g_buyBreakoutVolumeOK = false;
+            g_buyDivergenceOK = false;
          }
       }
       else if(!g_buyBreakoutConfirmed && EnableDetailedLogging)
@@ -825,15 +985,7 @@ void MonitorEntries()
       // Step 3 & 4: Check if 5-min candle closed ABOVE 4H Low (reversal confirmation)
       if(g_buyBreakoutConfirmed && !g_buyReversalConfirmed && candle5mClose > g_4HLow)
       {
-         g_buyReversalConfirmed = true;
-
-         // Find the LOWEST low among the LATEST 10 candles within breakout-to-reversal range
-         // Use the LATER of: (1) 10 candles back, or (2) breakout time
-         // This ensures we analyze up to 10 candles but never before the breakout
-         datetime startTime = MathMax(g_buyBreakoutCandleTime, candle5mTime - (10 * 5 * 60));
-         double lowestLow = FindLowestLowInRange(startTime, candle5mTime);
-
-         LogMessage("*** BUY REVERSAL CONFIRMED ***");
+         LogMessage("*** BUY REVERSAL DETECTED ***");
          LogMessage("5-min candle closed ABOVE 4H Low after breakout");
          LogMessage("Candle Time: " + TimeToString(candle5mTime, TIME_DATE|TIME_MINUTES));
          LogMessage("Candle OHLC: O=" + DoubleToString(candle5mOpen, _Digits) +
@@ -842,6 +994,56 @@ void MonitorEntries()
                     " C=" + DoubleToString(candle5mClose, _Digits));
          LogMessage("Candle Close: " + DoubleToString(candle5mClose, _Digits) + " | 4H Low: " + DoubleToString(g_4HLow, _Digits));
          LogMessage("Reversal Distance: " + DoubleToString(candle5mClose - g_4HLow, _Digits) + " points");
+
+         // Check reversal volume confirmation if enabled - want HIGH volume on reversal
+         bool reversalVolumeOK = true;
+         if(g_activeVolumeConfirmation)
+         {
+            LogMessage("--- Checking Reversal Volume (Want HIGH) ---");
+
+            // Get volume of the reversal candle (index 1 = last closed candle)
+            g_buyReversalVolume = GetCandleVolume(1);
+
+            // Reuse average volume if already calculated, otherwise calculate it
+            if(g_averageVolume <= 0)
+            {
+               g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
+            }
+
+            // Check if reversal volume is HIGH (strong reversal = good confirmation)
+            g_buyReversalVolumeOK = IsReversalVolumeHigh(g_buyReversalVolume, g_averageVolume, ReversalVolumeMinMultiplier);
+
+            reversalVolumeOK = g_buyReversalVolumeOK;
+         }
+         else
+         {
+            LogMessage("Volume confirmation disabled - accepting reversal");
+            g_buyReversalVolumeOK = true;
+         }
+
+         // Only confirm reversal if volume is HIGH (or volume check is disabled)
+         if(!reversalVolumeOK)
+         {
+            LogMessage("*** BUY REVERSAL REJECTED - Volume Too Low ***");
+            LogMessage("Weak reversal lacks conviction - not ideal for trade");
+            LogMessage("Resetting to wait for next opportunity");
+            // Reset flags so we can check for another breakout
+            g_buyBreakoutConfirmed = false;
+            g_buyReversalConfirmed = false;
+            g_buyBreakoutVolumeOK = false;
+            g_buyReversalVolumeOK = false;
+            g_buyDivergenceOK = false;
+            return;
+         }
+
+         g_buyReversalConfirmed = true;
+
+         // Find the LOWEST low among the LATEST 10 candles within breakout-to-reversal range
+         // Use the LATER of: (1) 10 candles back, or (2) breakout time
+         // This ensures we analyze up to 10 candles but never before the breakout
+         datetime startTime = MathMax(g_buyBreakoutCandleTime, candle5mTime - (10 * 5 * 60));
+         double lowestLow = FindLowestLowInRange(startTime, candle5mTime);
+
          LogMessage("Analyzing latest 10 candles from " + TimeToString(startTime, TIME_MINUTES) +
                     " to " + TimeToString(candle5mTime, TIME_MINUTES));
          LogMessage("(Breakout occurred at: " + TimeToString(g_buyBreakoutCandleTime, TIME_MINUTES) + ")");
@@ -858,6 +1060,7 @@ void MonitorEntries()
          }
 
          LogMessage("LOWEST Low in pattern: " + DoubleToString(lowestLow, _Digits));
+         LogMessage("*** BUY REVERSAL CONFIRMED (High Volume) ***");
          LogMessage("FALSE BREAKOUT PATTERN COMPLETE - Executing BUY order");
 
          // Execute buy order using optimized SL calculation
@@ -910,11 +1113,11 @@ void MonitorEntries()
          LogMessage("Candle Close: " + DoubleToString(candle5mClose, _Digits) + " | 4H High: " + DoubleToString(g_4HHigh, _Digits));
          LogMessage("Breakout Distance: " + DoubleToString(candle5mClose - g_4HHigh, _Digits) + " points");
 
-         // Check volume confirmation if enabled
+         // Check volume confirmation if enabled - want LOW volume on breakout
          bool volumeOK = true;
-         if(UseVolumeConfirmation)
+         if(g_activeVolumeConfirmation)
          {
-            LogMessage("--- Checking Volume Confirmation ---");
+            LogMessage("--- Checking Breakout Volume (Want LOW) ---");
 
             // Get volume of the breakout candle (index 1 = last closed candle)
             g_sellBreakoutVolume = GetCandleVolume(1);
@@ -925,33 +1128,82 @@ void MonitorEntries()
                g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
             }
 
-            // Check if volume meets threshold
-            g_sellVolumeConfirmed = IsVolumeConfirmed(g_sellBreakoutVolume, g_averageVolume, VolumeThresholdMultiplier);
+            // Check if breakout volume is LOW (weak breakout = good for false breakout strategy)
+            g_sellBreakoutVolumeOK = IsBreakoutVolumeLow(g_sellBreakoutVolume, g_averageVolume, BreakoutVolumeMaxMultiplier);
 
-            volumeOK = g_sellVolumeConfirmed;
+            volumeOK = g_sellBreakoutVolumeOK;
          }
          else
          {
             LogMessage("Volume confirmation disabled - accepting breakout");
-            g_sellVolumeConfirmed = true;
+            g_sellBreakoutVolumeOK = true;
          }
 
-         // Only confirm breakout if volume is sufficient (or volume check is disabled)
-         if(volumeOK)
+         // Check divergence confirmation if volume is OK
+         bool divergenceOK = true;
+         if(volumeOK && g_activeDivergenceConfirmation)
+         {
+            LogMessage("--- Checking Divergence (Want Bearish) ---");
+
+            bool rsiDivergence = DetectBearishRSIDivergence();
+            bool macdDivergence = DetectBearishMACDDivergence();
+
+            // Determine if divergence requirement is met
+            if(RequireBothIndicators)
+            {
+               // Strict mode: require BOTH RSI and MACD divergence
+               divergenceOK = (rsiDivergence && macdDivergence);
+               g_sellDivergenceOK = divergenceOK;
+
+               if(divergenceOK)
+                  LogMessage("BOTH RSI and MACD show bearish divergence - CONFIRMED");
+               else
+                  LogMessage("Divergence requirement NOT met (need both RSI and MACD)");
+            }
+            else
+            {
+               // Lenient mode: require EITHER RSI or MACD divergence
+               divergenceOK = (rsiDivergence || macdDivergence);
+               g_sellDivergenceOK = divergenceOK;
+
+               if(divergenceOK)
+                  LogMessage("At least one indicator shows bearish divergence - CONFIRMED");
+               else
+                  LogMessage("No divergence detected on either RSI or MACD");
+            }
+         }
+         else if(!g_activeDivergenceConfirmation)
+         {
+            LogMessage("Divergence confirmation disabled - accepting breakout");
+            g_sellDivergenceOK = true;
+         }
+
+         // Only confirm breakout if BOTH volume and divergence are OK
+         if(volumeOK && divergenceOK)
          {
             g_sellBreakoutConfirmed = true;
             g_sellBreakoutCandleTime = candle5mTime;
-            LogMessage("*** SELL BREAKOUT CONFIRMED ***");
+            LogMessage("*** SELL BREAKOUT CONFIRMED (Low Volume + Bearish Divergence) ***");
             LogMessage("Waiting for reversal back below 4H High...");
          }
          else
          {
-            LogMessage("*** SELL BREAKOUT REJECTED - Insufficient Volume ***");
-            LogMessage("Breakout lacks conviction - likely a false breakout");
+            if(!volumeOK)
+            {
+               LogMessage("*** SELL BREAKOUT REJECTED - Volume Too High ***");
+               LogMessage("Strong breakout likely to continue - not ideal for false breakout");
+            }
+            if(!divergenceOK)
+            {
+               LogMessage("*** SELL BREAKOUT REJECTED - No Bearish Divergence ***");
+               LogMessage("Strong momentum suggests true breakout - not ideal for reversal");
+            }
+
             LogMessage("Resetting to wait for next breakout opportunity");
             // Reset flags so we can check for another breakout
             g_sellBreakoutConfirmed = false;
-            g_sellVolumeConfirmed = false;
+            g_sellBreakoutVolumeOK = false;
+            g_sellDivergenceOK = false;
          }
       }
       else if(!g_sellBreakoutConfirmed && EnableDetailedLogging)
@@ -963,15 +1215,7 @@ void MonitorEntries()
       // Step 3 & 4: Check if 5-min candle closed BELOW 4H High (reversal confirmation)
       if(g_sellBreakoutConfirmed && !g_sellReversalConfirmed && candle5mClose < g_4HHigh)
       {
-         g_sellReversalConfirmed = true;
-
-         // Find the HIGHEST high among the LATEST 10 candles within breakout-to-reversal range
-         // Use the LATER of: (1) 10 candles back, or (2) breakout time
-         // This ensures we analyze up to 10 candles but never before the breakout
-         datetime startTime = MathMax(g_sellBreakoutCandleTime, candle5mTime - (10 * 5 * 60));
-         double highestHigh = FindHighestHighInRange(startTime, candle5mTime);
-
-         LogMessage("*** SELL REVERSAL CONFIRMED ***");
+         LogMessage("*** SELL REVERSAL DETECTED ***");
          LogMessage("5-min candle closed BELOW 4H High after breakout");
          LogMessage("Candle Time: " + TimeToString(candle5mTime, TIME_DATE|TIME_MINUTES));
          LogMessage("Candle OHLC: O=" + DoubleToString(candle5mOpen, _Digits) +
@@ -980,6 +1224,56 @@ void MonitorEntries()
                     " C=" + DoubleToString(candle5mClose, _Digits));
          LogMessage("Candle Close: " + DoubleToString(candle5mClose, _Digits) + " | 4H High: " + DoubleToString(g_4HHigh, _Digits));
          LogMessage("Reversal Distance: " + DoubleToString(g_4HHigh - candle5mClose, _Digits) + " points");
+
+         // Check reversal volume confirmation if enabled - want HIGH volume on reversal
+         bool reversalVolumeOK = true;
+         if(g_activeVolumeConfirmation)
+         {
+            LogMessage("--- Checking Reversal Volume (Want HIGH) ---");
+
+            // Get volume of the reversal candle (index 1 = last closed candle)
+            g_sellReversalVolume = GetCandleVolume(1);
+
+            // Reuse average volume if already calculated, otherwise calculate it
+            if(g_averageVolume <= 0)
+            {
+               g_averageVolume = CalculateAverageVolume(VolumeAveragePeriod);
+            }
+
+            // Check if reversal volume is HIGH (strong reversal = good confirmation)
+            g_sellReversalVolumeOK = IsReversalVolumeHigh(g_sellReversalVolume, g_averageVolume, ReversalVolumeMinMultiplier);
+
+            reversalVolumeOK = g_sellReversalVolumeOK;
+         }
+         else
+         {
+            LogMessage("Volume confirmation disabled - accepting reversal");
+            g_sellReversalVolumeOK = true;
+         }
+
+         // Only confirm reversal if volume is HIGH (or volume check is disabled)
+         if(!reversalVolumeOK)
+         {
+            LogMessage("*** SELL REVERSAL REJECTED - Volume Too Low ***");
+            LogMessage("Weak reversal lacks conviction - not ideal for trade");
+            LogMessage("Resetting to wait for next opportunity");
+            // Reset flags so we can check for another breakout
+            g_sellBreakoutConfirmed = false;
+            g_sellReversalConfirmed = false;
+            g_sellBreakoutVolumeOK = false;
+            g_sellReversalVolumeOK = false;
+            g_sellDivergenceOK = false;
+            return;
+         }
+
+         g_sellReversalConfirmed = true;
+
+         // Find the HIGHEST high among the LATEST 10 candles within breakout-to-reversal range
+         // Use the LATER of: (1) 10 candles back, or (2) breakout time
+         // This ensures we analyze up to 10 candles but never before the breakout
+         datetime startTime = MathMax(g_sellBreakoutCandleTime, candle5mTime - (10 * 5 * 60));
+         double highestHigh = FindHighestHighInRange(startTime, candle5mTime);
+
          LogMessage("Analyzing latest 10 candles from " + TimeToString(startTime, TIME_MINUTES) +
                     " to " + TimeToString(candle5mTime, TIME_MINUTES));
          LogMessage("(Breakout occurred at: " + TimeToString(g_sellBreakoutCandleTime, TIME_MINUTES) + ")");
@@ -996,6 +1290,7 @@ void MonitorEntries()
          }
 
          LogMessage("HIGHEST High in pattern: " + DoubleToString(highestHigh, _Digits));
+         LogMessage("*** SELL REVERSAL CONFIRMED (High Volume) ***");
          LogMessage("FALSE BREAKOUT PATTERN COMPLETE - Executing SELL order");
 
          // Execute sell order using optimized SL calculation
@@ -1708,14 +2003,16 @@ bool HasOpenPosition(ENUM_ORDER_TYPE orderType)
 }
 
 //+------------------------------------------------------------------+
-//| Check if in first 4H candle formation period (00:00-04:00 UTC)   |
-//| This is when the candle is actively forming (not yet closed)     |
+//| Check if in restricted trading period (00:00-08:00 UTC)          |
+//| This covers both the first 4H candle (00:00-04:00) and second    |
+//| 4H candle (04:00-08:00) to ensure proper data processing and     |
+//| avoid trading during early market volatility                     |
 //+------------------------------------------------------------------+
 bool IsInCandleFormationPeriod()
 {
    MqlDateTime currentTime;
    TimeToStruct(TimeCurrent(), currentTime);
-   return (currentTime.hour >= 0 && currentTime.hour < 4);
+   return (currentTime.hour >= 0 && currentTime.hour < 8);
 }
 
 //+------------------------------------------------------------------+
@@ -2123,10 +2420,16 @@ void Update4HData(int candleIndex)
 
    // Reset volume tracking
    g_buyBreakoutVolume = 0;
+   g_buyReversalVolume = 0;
    g_sellBreakoutVolume = 0;
+   g_sellReversalVolume = 0;
    g_averageVolume = 0;
-   g_buyVolumeConfirmed = false;
-   g_sellVolumeConfirmed = false;
+   g_buyBreakoutVolumeOK = false;
+   g_buyReversalVolumeOK = false;
+   g_sellBreakoutVolumeOK = false;
+   g_sellReversalVolumeOK = false;
+   g_buyDivergenceOK = false;
+   g_sellDivergenceOK = false;
 
    // Enable trading after updating 4H data
    g_tradingAllowedToday = true;
@@ -2474,9 +2777,9 @@ long GetCandleVolume(int candleIndex)
 }
 
 //+------------------------------------------------------------------+
-//| Check if breakout volume meets the threshold requirement         |
+//| Check if breakout volume is LOW (weak breakout = good for false breakout strategy) |
 //+------------------------------------------------------------------+
-bool IsVolumeConfirmed(long breakoutVolume, double averageVolume, double threshold)
+bool IsBreakoutVolumeLow(long breakoutVolume, double averageVolume, double maxThreshold)
 {
    if(averageVolume <= 0)
    {
@@ -2485,26 +2788,62 @@ bool IsVolumeConfirmed(long breakoutVolume, double averageVolume, double thresho
    }
 
    double volumeRatio = (double)breakoutVolume / averageVolume;
-   bool confirmed = volumeRatio >= threshold;
+   bool isLow = volumeRatio <= maxThreshold;
 
-   LogMessage("=== Volume Confirmation Check ===");
+   LogMessage("=== Breakout Volume Check (Want LOW Volume) ===");
    LogMessage("Breakout Volume: " + IntegerToString(breakoutVolume));
    LogMessage("Average Volume: " + DoubleToString(averageVolume, 0));
    LogMessage("Volume Ratio: " + DoubleToString(volumeRatio, 2) + "x");
-   LogMessage("Required Threshold: " + DoubleToString(threshold, 2) + "x");
-   LogMessage("Volume Confirmed: " + (confirmed ? "YES" : "NO"));
+   LogMessage("Max Threshold: " + DoubleToString(maxThreshold, 2) + "x");
+   LogMessage("Volume is LOW: " + (isLow ? "YES" : "NO"));
 
-   if(!confirmed)
+   if(!isLow)
    {
-      LogMessage(">>> VOLUME TOO LOW - Breakout lacks conviction <<<");
-      LogMessage(">>> This may be a false breakout - skipping trade <<<");
+      LogMessage(">>> VOLUME TOO HIGH - Strong breakout, likely to continue <<<");
+      LogMessage(">>> Not ideal for false breakout strategy - skipping <<<");
    }
    else
    {
-      LogMessage(">>> VOLUME CONFIRMED - Strong breakout conviction <<<");
+      LogMessage(">>> VOLUME IS LOW - Weak breakout, likely to reverse <<<");
+      LogMessage(">>> Good candidate for false breakout - proceeding <<<");
    }
 
-   return confirmed;
+   return isLow;
+}
+
+//+------------------------------------------------------------------+
+//| Check if reversal volume is HIGH (strong reversal = good confirmation) |
+//+------------------------------------------------------------------+
+bool IsReversalVolumeHigh(long reversalVolume, double averageVolume, double minThreshold)
+{
+   if(averageVolume <= 0)
+   {
+      LogMessage("WARNING: Average volume is zero or negative - cannot confirm volume");
+      return false;
+   }
+
+   double volumeRatio = (double)reversalVolume / averageVolume;
+   bool isHigh = volumeRatio >= minThreshold;
+
+   LogMessage("=== Reversal Volume Check (Want HIGH Volume) ===");
+   LogMessage("Reversal Volume: " + IntegerToString(reversalVolume));
+   LogMessage("Average Volume: " + DoubleToString(averageVolume, 0));
+   LogMessage("Volume Ratio: " + DoubleToString(volumeRatio, 2) + "x");
+   LogMessage("Min Threshold: " + DoubleToString(minThreshold, 2) + "x");
+   LogMessage("Volume is HIGH: " + (isHigh ? "YES" : "NO"));
+
+   if(!isHigh)
+   {
+      LogMessage(">>> VOLUME TOO LOW - Weak reversal, lacks conviction <<<");
+      LogMessage(">>> May not be a strong false breakout - skipping <<<");
+   }
+   else
+   {
+      LogMessage(">>> VOLUME IS HIGH - Strong reversal confirmation <<<");
+      LogMessage(">>> Excellent false breakout signal - proceeding <<<");
+   }
+
+   return isHigh;
 }
 
 
@@ -2716,5 +3055,537 @@ void LogActiveTrades()
    LogMessage("g_buyOrderPlaced: " + (g_buyOrderPlaced ? "TRUE" : "FALSE"));
    LogMessage("g_sellOrderPlaced: " + (g_sellOrderPlaced ? "TRUE" : "FALSE"));
    LogMessage("===========================");
+}
+
+//+------------------------------------------------------------------+
+//| Detect bullish RSI divergence (for BUY setup)                    |
+//| Price makes lower low, but RSI makes higher low                  |
+//| This indicates weakening downward momentum = likely to reverse   |
+//+------------------------------------------------------------------+
+bool DetectBullishRSIDivergence()
+{
+   if(g_rsiHandle == INVALID_HANDLE)
+      return false;
+
+   // Get RSI values for lookback period
+   double rsiValues[];
+   ArraySetAsSeries(rsiValues, true);
+
+   int copied = CopyBuffer(g_rsiHandle, 0, 0, DivergenceLookback + 1, rsiValues);
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy RSI data. Error: " + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   // Get price lows for lookback period
+   double lows[];
+   ArraySetAsSeries(lows, true);
+
+   copied = CopyLow(_Symbol, PERIOD_M5, 0, DivergenceLookback + 1, lows);
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy price lows. Error: " + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   // Find the most recent swing low (excluding current candle at index 0)
+   // Look for a low that is lower than its neighbors
+   int recentLowIndex = -1;
+   for(int i = 2; i < DivergenceLookback - 1; i++)
+   {
+      if(lows[i] < lows[i-1] && lows[i] < lows[i+1])
+      {
+         recentLowIndex = i;
+         break;
+      }
+   }
+
+   if(recentLowIndex == -1)
+   {
+      if(EnableDetailedLogging)
+         LogMessage("No swing low found in lookback period");
+      return false;
+   }
+
+   // Current price low (index 1 = last closed candle)
+   double currentLow = lows[1];
+   double previousLow = lows[recentLowIndex];
+
+   // Current RSI and previous RSI at swing low
+   double currentRSI = rsiValues[1];
+   double previousRSI = rsiValues[recentLowIndex];
+
+   // Bullish divergence: Price makes lower low, RSI makes higher low
+   bool priceLowerLow = (currentLow < previousLow);
+   bool rsiHigherLow = (currentRSI > previousRSI);
+
+   if(priceLowerLow && rsiHigherLow)
+   {
+      LogMessage("*** BULLISH RSI DIVERGENCE DETECTED ***");
+      LogMessage("Price: " + DoubleToString(previousLow, _Digits) + " -> " + DoubleToString(currentLow, _Digits) + " (Lower Low)");
+      LogMessage("RSI: " + DoubleToString(previousRSI, 2) + " -> " + DoubleToString(currentRSI, 2) + " (Higher Low)");
+      LogMessage("Swing low found at index " + IntegerToString(recentLowIndex) + " (" + IntegerToString(recentLowIndex * 5) + " minutes ago)");
+      return true;
+   }
+
+   if(EnableDetailedLogging)
+   {
+      LogMessage("No bullish RSI divergence:");
+      LogMessage("  Price Lower Low: " + (priceLowerLow ? "YES" : "NO"));
+      LogMessage("  RSI Higher Low: " + (rsiHigherLow ? "YES" : "NO"));
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Detect bearish RSI divergence (for SELL setup)                   |
+//| Price makes higher high, but RSI makes lower high                |
+//| This indicates weakening upward momentum = likely to reverse     |
+//+------------------------------------------------------------------+
+bool DetectBearishRSIDivergence()
+{
+   if(g_rsiHandle == INVALID_HANDLE)
+      return false;
+
+   // Get RSI values for lookback period
+   double rsiValues[];
+   ArraySetAsSeries(rsiValues, true);
+
+   int copied = CopyBuffer(g_rsiHandle, 0, 0, DivergenceLookback + 1, rsiValues);
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy RSI data. Error: " + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   // Get price highs for lookback period
+   double highs[];
+   ArraySetAsSeries(highs, true);
+
+   copied = CopyHigh(_Symbol, PERIOD_M5, 0, DivergenceLookback + 1, highs);
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy price highs. Error: " + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   // Find the most recent swing high (excluding current candle at index 0)
+   // Look for a high that is higher than its neighbors
+   int recentHighIndex = -1;
+   for(int i = 2; i < DivergenceLookback - 1; i++)
+   {
+      if(highs[i] > highs[i-1] && highs[i] > highs[i+1])
+      {
+         recentHighIndex = i;
+         break;
+      }
+   }
+
+   if(recentHighIndex == -1)
+   {
+      if(EnableDetailedLogging)
+         LogMessage("No swing high found in lookback period");
+      return false;
+   }
+
+   // Current price high (index 1 = last closed candle)
+   double currentHigh = highs[1];
+   double previousHigh = highs[recentHighIndex];
+
+   // Current RSI and previous RSI at swing high
+   double currentRSI = rsiValues[1];
+   double previousRSI = rsiValues[recentHighIndex];
+
+   // Bearish divergence: Price makes higher high, RSI makes lower high
+   bool priceHigherHigh = (currentHigh > previousHigh);
+   bool rsiLowerHigh = (currentRSI < previousRSI);
+
+   if(priceHigherHigh && rsiLowerHigh)
+   {
+      LogMessage("*** BEARISH RSI DIVERGENCE DETECTED ***");
+      LogMessage("Price: " + DoubleToString(previousHigh, _Digits) + " -> " + DoubleToString(currentHigh, _Digits) + " (Higher High)");
+      LogMessage("RSI: " + DoubleToString(previousRSI, 2) + " -> " + DoubleToString(currentRSI, 2) + " (Lower High)");
+      LogMessage("Swing high found at index " + IntegerToString(recentHighIndex) + " (" + IntegerToString(recentHighIndex * 5) + " minutes ago)");
+      return true;
+   }
+
+   if(EnableDetailedLogging)
+   {
+      LogMessage("No bearish RSI divergence:");
+      LogMessage("  Price Higher High: " + (priceHigherHigh ? "YES" : "NO"));
+      LogMessage("  RSI Lower High: " + (rsiLowerHigh ? "YES" : "NO"));
+   }
+
+   return false;
+}
+
+
+//+------------------------------------------------------------------+
+//| Detect bullish MACD divergence (for BUY setup)                   |
+//| Price makes lower low, but MACD makes higher low                 |
+//| This indicates weakening downward momentum = likely to reverse   |
+//+------------------------------------------------------------------+
+bool DetectBullishMACDDivergence()
+{
+   if(g_macdHandle == INVALID_HANDLE)
+      return false;
+
+   // Get MACD main line values for lookback period
+   double macdValues[];
+   ArraySetAsSeries(macdValues, true);
+
+   int copied = CopyBuffer(g_macdHandle, 0, 0, DivergenceLookback + 1, macdValues);
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy MACD data. Error: " + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   // Get price lows for lookback period
+   double lows[];
+   ArraySetAsSeries(lows, true);
+
+   copied = CopyLow(_Symbol, PERIOD_M5, 0, DivergenceLookback + 1, lows);
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy price lows. Error: " + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   // Find the most recent swing low (excluding current candle at index 0)
+   int recentLowIndex = -1;
+   for(int i = 2; i < DivergenceLookback - 1; i++)
+   {
+      if(lows[i] < lows[i-1] && lows[i] < lows[i+1])
+      {
+         recentLowIndex = i;
+         break;
+      }
+   }
+
+   if(recentLowIndex == -1)
+   {
+      if(EnableDetailedLogging)
+         LogMessage("No swing low found for MACD divergence");
+      return false;
+   }
+
+   // Current price low and MACD (index 1 = last closed candle)
+   double currentLow = lows[1];
+   double previousLow = lows[recentLowIndex];
+   double currentMACD = macdValues[1];
+   double previousMACD = macdValues[recentLowIndex];
+
+   // Bullish divergence: Price makes lower low, MACD makes higher low
+   bool priceLowerLow = (currentLow < previousLow);
+   bool macdHigherLow = (currentMACD > previousMACD);
+
+   if(priceLowerLow && macdHigherLow)
+   {
+      LogMessage("*** BULLISH MACD DIVERGENCE DETECTED ***");
+      LogMessage("Price: " + DoubleToString(previousLow, _Digits) + " -> " + DoubleToString(currentLow, _Digits) + " (Lower Low)");
+      LogMessage("MACD: " + DoubleToString(previousMACD, 5) + " -> " + DoubleToString(currentMACD, 5) + " (Higher Low)");
+      LogMessage("Swing low found at index " + IntegerToString(recentLowIndex) + " (" + IntegerToString(recentLowIndex * 5) + " minutes ago)");
+      return true;
+   }
+
+   if(EnableDetailedLogging)
+   {
+      LogMessage("No bullish MACD divergence:");
+      LogMessage("  Price Lower Low: " + (priceLowerLow ? "YES" : "NO"));
+      LogMessage("  MACD Higher Low: " + (macdHigherLow ? "YES" : "NO"));
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Detect bearish MACD divergence (for SELL setup)                  |
+//| Price makes higher high, but MACD makes lower high               |
+//| This indicates weakening upward momentum = likely to reverse     |
+//+------------------------------------------------------------------+
+bool DetectBearishMACDDivergence()
+{
+   if(g_macdHandle == INVALID_HANDLE)
+      return false;
+
+   // Get MACD main line values for lookback period
+   double macdValues[];
+   ArraySetAsSeries(macdValues, true);
+
+   int copied = CopyBuffer(g_macdHandle, 0, 0, DivergenceLookback + 1, macdValues);
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy MACD data. Error: " + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   // Get price highs for lookback period
+   double highs[];
+   ArraySetAsSeries(highs, true);
+
+   copied = CopyHigh(_Symbol, PERIOD_M5, 0, DivergenceLookback + 1, highs);
+   if(copied <= 0)
+   {
+      LogMessage("ERROR: Failed to copy price highs. Error: " + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   // Find the most recent swing high (excluding current candle at index 0)
+   int recentHighIndex = -1;
+   for(int i = 2; i < DivergenceLookback - 1; i++)
+   {
+      if(highs[i] > highs[i-1] && highs[i] > highs[i+1])
+      {
+         recentHighIndex = i;
+         break;
+      }
+   }
+
+   if(recentHighIndex == -1)
+   {
+      if(EnableDetailedLogging)
+         LogMessage("No swing high found for MACD divergence");
+      return false;
+   }
+
+   // Current price high and MACD (index 1 = last closed candle)
+   double currentHigh = highs[1];
+   double previousHigh = highs[recentHighIndex];
+   double currentMACD = macdValues[1];
+   double previousMACD = macdValues[recentHighIndex];
+
+   // Bearish divergence: Price makes higher high, MACD makes lower high
+   bool priceHigherHigh = (currentHigh > previousHigh);
+   bool macdLowerHigh = (currentMACD < previousMACD);
+
+   if(priceHigherHigh && macdLowerHigh)
+   {
+      LogMessage("*** BEARISH MACD DIVERGENCE DETECTED ***");
+      LogMessage("Price: " + DoubleToString(previousHigh, _Digits) + " -> " + DoubleToString(currentHigh, _Digits) + " (Higher High)");
+      LogMessage("MACD: " + DoubleToString(previousMACD, 5) + " -> " + DoubleToString(currentMACD, 5) + " (Lower High)");
+      LogMessage("Swing high found at index " + IntegerToString(recentHighIndex) + " (" + IntegerToString(recentHighIndex * 5) + " minutes ago)");
+      return true;
+   }
+
+   if(EnableDetailedLogging)
+   {
+      LogMessage("No bearish MACD divergence:");
+      LogMessage("  Price Higher High: " + (priceHigherHigh ? "YES" : "NO"));
+      LogMessage("  MACD Lower High: " + (macdLowerHigh ? "YES" : "NO"));
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Process closed trade and update adaptive filter system           |
+//| Called when a trade closes to track win/loss and adjust filters  |
+//| Parameter: positionId - the position ID (not deal ticket)        |
+//+------------------------------------------------------------------+
+void ProcessClosedTrade(ulong positionId)
+{
+   if(!UseAdaptiveFilters)
+      return;
+
+   // Avoid processing the same trade twice
+   if(positionId == g_lastClosedTicket)
+      return;
+
+   g_lastClosedTicket = positionId;
+
+   // Select the position from history
+   if(!HistorySelectByPosition(positionId))
+   {
+      LogMessage("ERROR: Failed to select position " + IntegerToString(positionId) + " from history");
+      return;
+   }
+
+   // Calculate total P&L for this position by summing all deals
+   double totalProfit = 0;
+   double totalSwap = 0;
+   double totalCommission = 0;
+
+   int totalDeals = HistoryDealsTotal();
+   for(int i = 0; i < totalDeals; i++)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0)
+         continue;
+
+      long dealPosition = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      if(dealPosition != (long)positionId)
+         continue;
+
+      totalProfit += HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+      totalSwap += HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+      totalCommission += HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+   }
+
+   double totalPnL = totalProfit + totalSwap + totalCommission;
+
+   // Determine if trade was a win or loss
+   bool isWin = (totalPnL > 0);
+
+   LogMessage("=== ADAPTIVE FILTER: Trade Closed ===");
+   LogMessage("Position ID: " + IntegerToString(positionId));
+   LogMessage("Profit: " + DoubleToString(totalProfit, 2));
+   LogMessage("Swap: " + DoubleToString(totalSwap, 2));
+   LogMessage("Commission: " + DoubleToString(totalCommission, 2));
+   LogMessage("Total P&L: " + DoubleToString(totalPnL, 2));
+   LogMessage("Result: " + (isWin ? "WIN" : "LOSS"));
+
+   if(isWin)
+   {
+      // Reset consecutive losses
+      g_consecutiveLosses = 0;
+
+      // If adaptive mode is active, count consecutive wins
+      if(g_adaptiveModeActive)
+      {
+         g_consecutiveWins++;
+         LogMessage("Consecutive Wins (Adaptive Mode): " + IntegerToString(g_consecutiveWins) + " / " + IntegerToString(AdaptiveWinRecovery));
+
+         // Check if we should deactivate adaptive mode
+         if(g_consecutiveWins >= AdaptiveWinRecovery)
+         {
+            DeactivateAdaptiveFilters();
+         }
+      }
+      else
+      {
+         LogMessage("Consecutive Losses Reset: 0");
+      }
+   }
+   else // Loss
+   {
+      // Reset consecutive wins
+      g_consecutiveWins = 0;
+
+      // Count consecutive losses
+      g_consecutiveLosses++;
+      LogMessage("Consecutive Losses: " + IntegerToString(g_consecutiveLosses) + " / " + IntegerToString(AdaptiveLossTrigger));
+
+      // Check if we should activate adaptive mode
+      if(!g_adaptiveModeActive && g_consecutiveLosses >= AdaptiveLossTrigger)
+      {
+         ActivateAdaptiveFilters();
+      }
+   }
+
+   LogMessage("Adaptive Mode Active: " + (g_adaptiveModeActive ? "YES" : "NO"));
+   LogMessage("=====================================");
+}
+
+//+------------------------------------------------------------------+
+//| Activate adaptive filters after consecutive losses               |
+//+------------------------------------------------------------------+
+void ActivateAdaptiveFilters()
+{
+   if(g_adaptiveModeActive)
+      return; // Already active
+
+   g_adaptiveModeActive = true;
+   g_consecutiveWins = 0; // Reset win counter
+
+   // Enable both volume and divergence confirmation (using working variables)
+   g_activeVolumeConfirmation = true;
+   g_activeDivergenceConfirmation = true;
+
+   LogMessage("╔════════════════════════════════════════════════════════════╗");
+   LogMessage("║  ADAPTIVE MODE ACTIVATED                                   ║");
+   LogMessage("╚════════════════════════════════════════════════════════════╝");
+   LogMessage("Reason: " + IntegerToString(AdaptiveLossTrigger) + " consecutive losses detected");
+   LogMessage("Action: Enabling volume AND divergence filters");
+   LogMessage("Recovery: Need " + IntegerToString(AdaptiveWinRecovery) + " consecutive wins to deactivate");
+   LogMessage("Original Settings:");
+   LogMessage("  Volume Confirmation: " + (g_originalVolumeConfirmation ? "Enabled" : "Disabled"));
+   LogMessage("  Divergence Confirmation: " + (g_originalDivergenceConfirmation ? "Enabled" : "Disabled"));
+   LogMessage("Current Settings:");
+   LogMessage("  Volume Confirmation: ENABLED (Adaptive)");
+   LogMessage("  Divergence Confirmation: ENABLED (Adaptive)");
+   LogMessage("════════════════════════════════════════════════════════════");
+}
+
+//+------------------------------------------------------------------+
+//| Deactivate adaptive filters after consecutive wins               |
+//+------------------------------------------------------------------+
+void DeactivateAdaptiveFilters()
+{
+   if(!g_adaptiveModeActive)
+      return; // Already inactive
+
+   g_adaptiveModeActive = false;
+   g_consecutiveLosses = 0; // Reset loss counter
+   g_consecutiveWins = 0;   // Reset win counter
+
+   // Restore original settings (using working variables)
+   g_activeVolumeConfirmation = g_originalVolumeConfirmation;
+   g_activeDivergenceConfirmation = g_originalDivergenceConfirmation;
+
+   LogMessage("╔════════════════════════════════════════════════════════════╗");
+   LogMessage("║  ADAPTIVE MODE DEACTIVATED                                 ║");
+   LogMessage("╚════════════════════════════════════════════════════════════╝");
+   LogMessage("Reason: " + IntegerToString(AdaptiveWinRecovery) + " consecutive wins achieved");
+   LogMessage("Action: Restoring original filter settings");
+   LogMessage("Restored Settings:");
+   LogMessage("  Volume Confirmation: " + (g_activeVolumeConfirmation ? "Enabled" : "Disabled"));
+   LogMessage("  Divergence Confirmation: " + (g_activeDivergenceConfirmation ? "Enabled" : "Disabled"));
+   LogMessage("════════════════════════════════════════════════════════════");
+}
+
+//+------------------------------------------------------------------+
+//| Check for closed positions and process them                      |
+//| Should be called on every tick to detect position closures       |
+//+------------------------------------------------------------------+
+void CheckForClosedPositions()
+{
+   if(!UseAdaptiveFilters)
+      return;
+
+   // Request history for the last day
+   datetime from = TimeCurrent() - 86400; // Last 24 hours
+   datetime to = TimeCurrent();
+
+   if(!HistorySelect(from, to))
+   {
+      if(EnableDetailedLogging)
+         LogMessage("Failed to select history for adaptive filter check");
+      return;
+   }
+
+   int totalDeals = HistoryDealsTotal();
+
+   // Check the most recent deals for position closures
+   for(int i = totalDeals - 1; i >= MathMax(0, totalDeals - 10); i--) // Check last 10 deals
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      // Only process deals from this EA
+      long magic = HistoryDealGetInteger(ticket, DEAL_MAGIC);
+      if(magic != MagicNumber)
+         continue;
+
+      // Only process exit deals (position closures)
+      ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(dealEntry != DEAL_ENTRY_OUT)
+         continue;
+
+      // Get the position ticket (not the deal ticket)
+      long positionId = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+
+      // Check if we've already processed this position closure
+      if(positionId == (long)g_lastClosedTicket)
+         continue;
+
+      // Process this closed position
+      ProcessClosedTrade((ulong)positionId);
+      break; // Only process one closure per tick to avoid spam
+   }
 }
 
