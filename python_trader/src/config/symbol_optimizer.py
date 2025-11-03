@@ -85,7 +85,7 @@ class SymbolOptimizer:
             divergence_lookback=30,
             adaptive_loss_trigger=2,
             adaptive_win_recovery=4,
-            max_spread_percent=0.1 
+            max_spread_percent=0.05 
         ),
         SymbolCategory.METALS: SymbolParameters(
             breakout_volume_max=0.7,
