@@ -85,23 +85,50 @@ class OrderManager:
         symbol = signal.symbol
         
         # Normalize prices and volume
-        entry_price = self.normalize_price(symbol, signal.entry_price)
         sl = self.normalize_price(symbol, signal.stop_loss)
-        tp = self.normalize_price(symbol, signal.take_profit)
         volume = self.normalize_volume(symbol, signal.lot_size)
-        
-        # Determine order type
+
+        # Determine order type and get current market price
         if signal.signal_type == PositionType.BUY:
             order_type = mt5.ORDER_TYPE_BUY
             price = self.connector.get_current_price(symbol, 'ask')
         else:
             order_type = mt5.ORDER_TYPE_SELL
             price = self.connector.get_current_price(symbol, 'bid')
-        
+
         if price is None:
             self.logger.error(f"Failed to get current price for {symbol}", symbol)
             return None
-        
+
+        # Recalculate TP based on actual execution price (market price)
+        # This ensures the R:R ratio is maintained with the actual entry
+        # Use the configured R:R ratio (default 2.0)
+        configured_rr = 2.0  # Always use 2:1 ratio
+
+        risk = abs(price - sl)
+        reward = risk * configured_rr
+
+        self.logger.debug(f"TP Calculation: Entry={price:.5f}, SL={sl:.5f}, Risk={risk:.5f}, Reward={reward:.5f}, R:R={configured_rr}", symbol)
+
+        if signal.signal_type == PositionType.BUY:
+            tp = price + reward
+        else:
+            tp = price - reward
+
+        # Normalize the recalculated TP
+        tp = self.normalize_price(symbol, tp)
+
+        self.logger.debug(f"Final TP: {tp:.5f} (before normalize: {price + reward if signal.signal_type == PositionType.BUY else price - reward:.5f})", symbol)
+
+        # Get symbol info to validate stops
+        symbol_info = self.connector.get_symbol_info(symbol)
+        if symbol_info is None:
+            self.logger.error(f"Failed to get symbol info", symbol)
+            return None
+
+        # Validate and adjust SL/TP to meet minimum stop level requirements
+        sl, tp = self._validate_stops(symbol, price, sl, tp, signal.signal_type, symbol_info)
+
         # Log signal
         self.logger.trade_signal(
             signal_type=signal.signal_type.value.upper(),
@@ -111,7 +138,18 @@ class OrderManager:
             tp=tp,
             lot_size=volume
         )
-        
+
+        # Determine filling mode based on symbol's supported modes
+        filling_mode = self._get_filling_mode(symbol_info)
+
+        # Log the filling mode being used
+        filling_mode_name = {
+            mt5.ORDER_FILLING_FOK: "FOK",
+            mt5.ORDER_FILLING_IOC: "IOC",
+            mt5.ORDER_FILLING_RETURN: "RETURN"
+        }.get(filling_mode, "UNKNOWN")
+        self.logger.debug(f"Using filling mode: {filling_mode_name}", symbol)
+
         # Create order request
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -125,7 +163,7 @@ class OrderManager:
             "magic": self.magic_number,
             "comment": self.trade_comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,
         }
         
         # Send order
@@ -155,10 +193,126 @@ class OrderManager:
             )
             
             return result.order
-            
+
         except Exception as e:
             self.logger.error(f"Error executing order: {e}", symbol)
             return None
+
+    def _validate_stops(self, symbol: str, price: float, sl: float, tp: float,
+                        signal_type: PositionType, symbol_info: dict) -> tuple:
+        """
+        Validate and adjust SL/TP to meet MT5 minimum stop level requirements.
+
+        Args:
+            symbol: Symbol name
+            price: Entry price
+            sl: Stop loss price
+            tp: Take profit price
+            signal_type: BUY or SELL
+            symbol_info: Symbol information dictionary
+
+        Returns:
+            Tuple of (adjusted_sl, adjusted_tp)
+        """
+        point = symbol_info['point']
+        stops_level = symbol_info.get('stops_level', 0)
+
+        # If stops_level is 0, no minimum distance required
+        if stops_level == 0:
+            return sl, tp
+
+        # Calculate minimum distance in price
+        min_distance = stops_level * point
+
+        # Check and adjust SL
+        sl_distance = abs(price - sl)
+        if sl_distance < min_distance:
+            self.logger.warning(
+                f"SL too close to entry: {sl_distance:.5f} < {min_distance:.5f}. Adjusting...",
+                symbol
+            )
+            if signal_type == PositionType.BUY:
+                sl = price - min_distance
+            else:
+                sl = price + min_distance
+            sl = self.normalize_price(symbol, sl)
+            self.logger.info(f"Adjusted SL: {sl:.5f}", symbol)
+
+        # Check and adjust TP
+        tp_distance = abs(price - tp)
+        if tp_distance < min_distance:
+            self.logger.warning(
+                f"TP too close to entry: {tp_distance:.5f} < {min_distance:.5f}. Adjusting...",
+                symbol
+            )
+            if signal_type == PositionType.BUY:
+                tp = price + min_distance
+            else:
+                tp = price - min_distance
+            tp = self.normalize_price(symbol, tp)
+            self.logger.info(f"Adjusted TP: {tp:.5f}", symbol)
+
+        # Verify SL is on correct side
+        if signal_type == PositionType.BUY:
+            if sl >= price:
+                self.logger.error(f"Invalid BUY SL: {sl:.5f} >= Entry: {price:.5f}", symbol)
+                sl = price - min_distance
+                sl = self.normalize_price(symbol, sl)
+                self.logger.info(f"Corrected SL: {sl:.5f}", symbol)
+            if tp <= price:
+                self.logger.error(f"Invalid BUY TP: {tp:.5f} <= Entry: {price:.5f}", symbol)
+                tp = price + min_distance
+                tp = self.normalize_price(symbol, tp)
+                self.logger.info(f"Corrected TP: {tp:.5f}", symbol)
+        else:  # SELL
+            if sl <= price:
+                self.logger.error(f"Invalid SELL SL: {sl:.5f} <= Entry: {price:.5f}", symbol)
+                sl = price + min_distance
+                sl = self.normalize_price(symbol, sl)
+                self.logger.info(f"Corrected SL: {sl:.5f}", symbol)
+            if tp >= price:
+                self.logger.error(f"Invalid SELL TP: {tp:.5f} >= Entry: {price:.5f}", symbol)
+                tp = price - min_distance
+                tp = self.normalize_price(symbol, tp)
+                self.logger.info(f"Corrected TP: {tp:.5f}", symbol)
+
+        return sl, tp
+
+    def _get_filling_mode(self, symbol_info: dict) -> int:
+        """
+        Determine the appropriate filling mode for the symbol.
+
+        Args:
+            symbol_info: Symbol information dictionary
+
+        Returns:
+            MT5 filling mode constant
+        """
+        # Get symbol's filling mode flags
+        filling_mode = symbol_info.get('filling_mode', 0)
+
+        # If filling_mode is 0, it means it wasn't retrieved - default to FOK
+        if filling_mode == 0:
+            self.logger.warning(f"Filling mode not available, defaulting to FOK")
+            return mt5.ORDER_FILLING_FOK
+
+        # Check supported modes in order of preference: FOK > IOC > RETURN
+        # FOK (Fill or Kill) - most restrictive, best for market orders
+        if filling_mode & 1:  # SYMBOL_FILLING_FOK (bit 0)
+            return mt5.ORDER_FILLING_FOK
+
+        # IOC (Immediate or Cancel) - partial fills allowed
+        elif filling_mode & 2:  # SYMBOL_FILLING_IOC (bit 1)
+            return mt5.ORDER_FILLING_IOC
+
+        # RETURN - can remain in order book
+        elif filling_mode & 4:  # SYMBOL_FILLING_RETURN (bit 2)
+            return mt5.ORDER_FILLING_RETURN
+
+        # Fallback to FOK if no mode is supported (shouldn't happen)
+        else:
+            self.logger.warning(f"No filling mode supported (flags: {filling_mode}), defaulting to FOK")
+            return mt5.ORDER_FILLING_FOK
     
     def modify_position(self, ticket: int, sl: Optional[float] = None, 
                        tp: Optional[float] = None) -> bool:
@@ -256,7 +410,15 @@ class OrderManager:
             if price is None:
                 self.logger.error(f"Failed to get price for closing {ticket}")
                 return False
-            
+
+            # Get symbol info to determine filling mode
+            symbol_info = self.connector.get_symbol_info(symbol)
+            if symbol_info is None:
+                self.logger.error(f"Failed to get symbol info for closing {ticket}")
+                return False
+
+            filling_mode = self._get_filling_mode(symbol_info)
+
             # Create close request
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -269,7 +431,7 @@ class OrderManager:
                 "magic": self.magic_number,
                 "comment": f"Close {self.trade_comment}",
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": filling_mode,
             }
             
             # Send close order

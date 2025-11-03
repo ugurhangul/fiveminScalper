@@ -41,7 +41,7 @@ int OnInit()
       LogMessage("Trailing Stop Trigger: " + DoubleToString(TrailingStopTriggerRR, 2) + " R:R");
       LogMessage("Trailing Stop Distance: " + DoubleToString(TrailingStopDistance, 0) + " points");
    }
-   LogMessage("Use Only First 4H Candle: " + (UseOnly00UTCCandle ? "Yes (chart shows 04:00, opens 00:00-closes 04:00 UTC)" : "No"));
+   LogMessage("Use Only Second 4H Candle: " + (UseOnly00UTCCandle ? "Yes (chart shows 04:00, opens 04:00-closes 08:00 UTC)" : "No"));
    LogMessage("Trading Hours Filter: " + (UseTradingHours ? "Enabled" : "Disabled"));
    if(UseTradingHours)
    {
@@ -182,12 +182,12 @@ int OnInit()
       int candleIndex = 1; // Start with last closed candle
       bool foundValidCandle = false;
 
-      // If first 4H candle filter is enabled, search for it
-      // NOTE: iTime() returns OPENING time. Chart displays CLOSING time.
-      // First 4H candle: opens 00:00, closes 04:00 (chart shows 04:00)
+      // If second 4H candle filter is enabled, search for it
+      // NOTE: Both iTime() and chart display opening time (04:00 UTC)
+      // Second 4H candle: opens 04:00 UTC, closes 08:00 UTC
       if(UseOnly00UTCCandle)
       {
-         LogMessage("Searching for first 4H candle of day (opens 00:00, closes 04:00, chart shows 04:00)...");
+         LogMessage("Searching for second 4H candle of day (opens 04:00 UTC, closes 08:00 UTC)...");
 
          // Search backwards up to 24 hours (6 x 4H candles)
          for(int i = 1; i <= 6; i++)
@@ -196,20 +196,20 @@ int OnInit()
             MqlDateTime timeStruct;
             TimeToStruct(candleTime, timeStruct);
 
-            if(timeStruct.hour == 4)  // Opening time is 00:00 (chart displays 04:00 as closing time)
+            if(timeStruct.hour == 4)  // Second candle opens at 04:00 UTC (chart shows 04:00)
             {
                candleIndex = i;
                foundValidCandle = true;
-               LogMessage("Found first 4H candle at index " + IntegerToString(i));
-               LogMessage("Opening time (iTime): " + TimeToString(candleTime, TIME_DATE|TIME_MINUTES) + " UTC");
-               LogMessage("Closing time (chart): 04:00 UTC");
+               LogMessage("Found second 4H candle at index " + IntegerToString(i));
+               LogMessage("Opening time: " + TimeToString(candleTime, TIME_DATE|TIME_MINUTES) + " UTC (shown on chart)");
+               LogMessage("Closing time: 08:00 UTC");
                break;
             }
          }
 
          if(!foundValidCandle)
          {
-            LogMessage("No first 4H candle found in last 24 hours - waiting for next one");
+            LogMessage("No second 4H candle found in last 24 hours - waiting for next one");
             LogMessage("EA will not trade until a valid 4H candle is processed");
          }
       }
@@ -285,12 +285,12 @@ int OnInit()
          g_buyDivergenceOK = false;
          g_sellDivergenceOK = false;
 
-         // Check if we're in the restricted trading period (00:00-08:00 UTC)
+         // Check if we're in the restricted trading period (04:00-08:00 UTC)
          if(IsInCandleFormationPeriod())
          {
             g_tradingAllowedToday = false;
-            LogMessage("TRADING SUSPENDED - EA started during restricted period (00:00-08:00 UTC)");
-            LogMessage("Trading will begin at 08:00 UTC after both 4H candles have closed");
+            LogMessage("TRADING SUSPENDED - EA started during restricted period (04:00-08:00 UTC)");
+            LogMessage("Trading will begin at 08:00 UTC after the second 4H candle has closed");
          }
          else
          {

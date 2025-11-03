@@ -4,8 +4,8 @@ Orchestrates concurrent trading across multiple symbols.
 """
 import threading
 import time
-from typing import Dict, List
-from datetime import datetime
+from typing import Dict, List, Set
+from datetime import datetime, timezone
 
 from src.core.mt5_connector import MT5Connector
 from src.execution.order_manager import OrderManager
@@ -13,6 +13,7 @@ from src.execution.trade_manager import TradeManager
 from src.indicators.technical_indicators import TechnicalIndicators
 from src.risk.risk_manager import RiskManager
 from src.strategy.symbol_strategy import SymbolStrategy
+from src.models.data_models import PositionInfo, PositionType
 from src.config.config import config
 from src.utils.logger import get_logger
 
@@ -47,9 +48,9 @@ class TradingController:
         self.threads: Dict[str, threading.Thread] = {}
         self.running = False
         self.lock = threading.Lock()
-        
+
         # Monitoring
-        self.last_position_check = datetime.now()
+        self.last_position_check = datetime.now(timezone.utc)
     
     def initialize(self, symbols: List[str]) -> bool:
         """
@@ -162,51 +163,116 @@ class TradingController:
     def _position_monitor(self):
         """Monitor all positions and check for closed trades"""
         self.logger.info("Position monitor thread started")
-        
+
         # Track known positions
         known_positions = set()
-        
+
+        # Track last statistics log time
+        last_stats_log = datetime.now(timezone.utc)
+
         while self.running:
             try:
                 # Get all positions
                 positions = self.connector.get_positions(
                     magic_number=config.advanced.magic_number
                 )
-                
+
                 # Current position tickets
                 current_tickets = {pos.ticket for pos in positions}
-                
+
                 # Check for closed positions
                 closed_tickets = known_positions - current_tickets
-                
+
                 for ticket in closed_tickets:
                     # Position was closed, need to find which symbol it was
                     # We'll check history to get the profit
                     self._handle_closed_position(ticket)
-                
+
                 # Update known positions
                 known_positions = current_tickets
-                
+
+                # Log statistics every 10 seconds
+                if (datetime.now(timezone.utc) - last_stats_log).total_seconds() >= 10:
+                    self._log_position_statistics(positions)
+                    last_stats_log = datetime.now(timezone.utc)
+
                 # Sleep for 5 seconds
                 time.sleep(5)
-                
+
             except Exception as e:
                 self.logger.error(f"Error in position monitor: {e}")
                 time.sleep(10)
-        
+
         self.logger.info("Position monitor thread stopped")
     
+    def _log_position_statistics(self, positions: List[PositionInfo]):
+        """
+        Log statistics about open positions.
+
+        Args:
+            positions: List of open positions
+        """
+        if not positions:
+            return
+
+        # Calculate statistics
+        total_positions = len(positions)
+        buy_positions = sum(1 for p in positions if p.position_type == PositionType.BUY)
+        sell_positions = total_positions - buy_positions
+
+        total_profit = sum(p.profit for p in positions)
+        winning_positions = sum(1 for p in positions if p.profit > 0)
+        losing_positions = sum(1 for p in positions if p.profit < 0)
+
+        # Get account info
+        balance = self.connector.get_account_balance()
+        equity = self.connector.get_account_equity()
+
+        # Group positions by symbol
+        positions_by_symbol = {}
+        for pos in positions:
+            if pos.symbol not in positions_by_symbol:
+                positions_by_symbol[pos.symbol] = []
+            positions_by_symbol[pos.symbol].append(pos)
+
+        # Log summary
+        self.logger.info("=" * 60)
+        self.logger.info("POSITION MONITOR - STATISTICS")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Account Balance: ${balance:.2f}")
+        self.logger.info(f"Account Equity: ${equity:.2f}")
+        self.logger.info(f"Floating P&L: ${total_profit:.2f}")
+        self.logger.info("-" * 60)
+        self.logger.info(f"Total Positions: {total_positions}")
+        self.logger.info(f"  BUY: {buy_positions} | SELL: {sell_positions}")
+        self.logger.info(f"  Winning: {winning_positions} | Losing: {losing_positions}")
+        self.logger.info("-" * 60)
+
+        # Log positions by symbol
+        for symbol, symbol_positions in sorted(positions_by_symbol.items()):
+            symbol_profit = sum(p.profit for p in symbol_positions)
+            self.logger.info(f"{symbol}: {len(symbol_positions)} position(s) | P&L: ${symbol_profit:.2f}")
+
+            for pos in symbol_positions:
+                pos_type = "BUY" if pos.position_type == PositionType.BUY else "SELL"
+                self.logger.info(
+                    f"  #{pos.ticket} {pos_type} {pos.volume:.2f} @ {pos.open_price:.5f} | "
+                    f"Current: {pos.current_price:.5f} | P&L: ${pos.profit:.2f}"
+                )
+
+        self.logger.info("=" * 60)
+
     def _handle_closed_position(self, ticket: int):
         """
         Handle a closed position.
-        
+
         Args:
             ticket: Position ticket
         """
         # Note: In a real implementation, we would query MT5 history
         # to get the symbol and profit. For now, we'll just log it.
         self.logger.info(f"Position {ticket} closed (detected by monitor)")
-        
+
         # TODO: Query MT5 history to get symbol and profit
         # Then call strategy.on_position_closed(ticket, profit)
     

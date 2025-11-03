@@ -2,7 +2,7 @@
 Candle processing and detection logic.
 Ported from FMS_CandleProcessing.mqh
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 import pandas as pd
 from src.models.data_models import CandleData, FourHourCandle
@@ -20,7 +20,7 @@ class CandleProcessor:
         Args:
             symbol: Symbol name
             connector: MT5 connector instance
-            use_only_00_utc: If True, only use 00:00 UTC candle (not 04:00)
+            use_only_00_utc: If True, only use second 4H candle (04:00-08:00 UTC)
         """
         self.symbol = symbol
         self.connector = connector
@@ -55,9 +55,10 @@ class CandleProcessor:
         
         # Check if this is a new candle
         if self.last_4h_candle_time is None or candle_time > self.last_4h_candle_time:
-            # If using only 04:00 UTC candle, verify it's the first candle of the day
+            # If using only second 4H candle, verify it's the correct candle of the day
             if self.use_only_00_utc:
-                # The 04:00 UTC candle opens at 04:00 and closes at 08:00
+                # The second 4H candle opens at 04:00 UTC and closes at 08:00 UTC
+                # Chart displays opening time (04:00 UTC)
                 # This matches the MQL5 code which checks for hour == 4
                 if candle_time.hour == 4 and candle_time.minute == 0:
                     self.last_4h_candle_time = candle_time
@@ -65,7 +66,7 @@ class CandleProcessor:
 
                     self.logger.info("=" * 60, self.symbol)
                     self.logger.info("*** NEW 4H CANDLE DETECTED (04:00 UTC) ***", self.symbol)
-                    self.logger.info(f"Time: {candle_time}", self.symbol)
+                    self.logger.info(f"Time: {candle_time} (opens 04:00, closes 08:00 UTC)", self.symbol)
                     self.logger.info(f"High: {last_candle['high']:.5f}", self.symbol)
                     self.logger.info(f"Low: {last_candle['low']:.5f}", self.symbol)
                     self.logger.info(f"Range: {self.current_4h_candle.range:.5f} points", self.symbol)
@@ -157,8 +158,8 @@ class CandleProcessor:
     def _initialize_4h_candle(self):
         """
         Initialize with the most recent valid 4H candle on startup.
-        Searches backwards up to 24 hours (6 x 4H candles) for the first 4H candle of the day.
-        NOTE: We look for the candle that opens at 04:00 UTC (closes at 08:00 UTC).
+        Searches backwards up to 24 hours (6 x 4H candles) for the second 4H candle of the day.
+        NOTE: We look for the candle that opens at 04:00 UTC (chart shows 04:00, closes at 08:00 UTC).
         """
         # Get recent 4H candles
         df = self.connector.get_candles(self.symbol, 'H4', count=7)
@@ -173,7 +174,8 @@ class CandleProcessor:
             candle_time = candle['time']
 
             if self.use_only_00_utc:
-                # Check if this is the 04:00 UTC candle (opens 04:00, closes 08:00)
+                # Check if this is the second 4H candle (opens 04:00, closes 08:00)
+                # Chart shows opening time (04:00 UTC)
                 # This matches the MQL5 code which checks for hour == 4
                 if candle_time.hour == 4 and candle_time.minute == 0:
                     self.last_4h_candle_time = candle_time
@@ -204,7 +206,7 @@ class CandleProcessor:
         # If we get here and use_only_00_utc is True, we didn't find a valid candle
         if self.use_only_00_utc:
             self.logger.warning(
-                "No 04:00 UTC 4H candle found in last 24 hours - waiting for next one",
+                "No second 4H candle (04:00 UTC) found in last 24 hours - waiting for next one",
                 self.symbol
             )
 
@@ -231,30 +233,41 @@ class CandleProcessor:
     def is_midnight_crossing(self) -> bool:
         """
         Check if we've crossed midnight UTC (new trading day).
-        
+
         Returns:
             True if midnight has been crossed
         """
-        current_time = datetime.utcnow()
-        
+        current_time = datetime.now(timezone.utc)
+
         # Check if it's within the first 5 minutes of a new day
         if current_time.hour == 0 and current_time.minute < 5:
             return True
-        
+
         return False
+
+    def is_in_candle_formation_period(self) -> bool:
+        """
+        Check if we're in the restricted trading period (04:00-08:00 UTC).
+        Trading is suspended while the second 4H candle of the day is forming.
+
+        Returns:
+            True if in restricted period (04:00-08:00 UTC)
+        """
+        current_time = datetime.now(timezone.utc)
+        return current_time.hour >= 4 and current_time.hour < 8
     
     def get_time_until_next_4h_candle(self) -> Optional[timedelta]:
         """
         Calculate time until the next 4H candle.
-        
+
         Returns:
             Timedelta until next 4H candle or None
         """
         if not self.use_only_00_utc:
             # Next 4H candle is at 00:00, 04:00, 08:00, 12:00, 16:00, or 20:00
-            current_time = datetime.utcnow()
+            current_time = datetime.now(timezone.utc)
             current_hour = current_time.hour
-            
+
             # Find next 4H boundary
             next_hour = ((current_hour // 4) + 1) * 4
             if next_hour >= 24:
@@ -263,14 +276,14 @@ class CandleProcessor:
                 next_candle_time = next_day.replace(hour=next_hour, minute=0, second=0, microsecond=0)
             else:
                 next_candle_time = current_time.replace(hour=next_hour, minute=0, second=0, microsecond=0)
-            
+
             return next_candle_time - current_time
         else:
             # Next candle is at 00:00 UTC tomorrow
-            current_time = datetime.utcnow()
+            current_time = datetime.now(timezone.utc)
             tomorrow = current_time + timedelta(days=1)
             next_candle_time = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
-            
+
             return next_candle_time - current_time
     
     def log_candle_status(self):

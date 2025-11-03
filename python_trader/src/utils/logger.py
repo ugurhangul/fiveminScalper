@@ -4,21 +4,60 @@ Provides comprehensive logging similar to the MQL5 EA.
 """
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 import colorlog
+from logging.handlers import TimedRotatingFileHandler
+
+
+class UTCFormatter(logging.Formatter):
+    """Custom formatter that uses UTC time for all log messages"""
+
+    def formatTime(self, record, datefmt=None):
+        """Override formatTime to use UTC"""
+        dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
+        if datefmt:
+            s = dt.strftime(datefmt)
+        else:
+            s = dt.isoformat(timespec='seconds')
+        return s
+
+
+class SymbolFileHandler(logging.FileHandler):
+    """File handler for symbol-specific logs"""
+
+    def __init__(self, symbol: str, log_dir: Path):
+        """
+        Initialize symbol-specific file handler.
+
+        Args:
+            symbol: Trading symbol name
+            log_dir: Base log directory
+        """
+        self.symbol = symbol
+        self.log_dir = log_dir
+
+        # Create date-based directory structure: logs/YYYY-MM-DD/
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_dir = log_dir / date_str
+        date_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create symbol-specific log file: logs/YYYY-MM-DD/SYMBOL.log
+        log_file = date_dir / f"{symbol}.log"
+
+        super().__init__(log_file, encoding='utf-8')
 
 
 class TradingLogger:
     """Custom logger for trading operations"""
-    
-    def __init__(self, name: str = "TradingBot", log_to_file: bool = True, 
+
+    def __init__(self, name: str = "TradingBot", log_to_file: bool = True,
                  log_to_console: bool = True, log_level: str = "INFO",
                  enable_detailed: bool = True):
         """
         Initialize the trading logger.
-        
+
         Args:
             name: Logger name
             log_to_file: Enable file logging
@@ -29,33 +68,51 @@ class TradingLogger:
         self.logger = logging.getLogger(name)
         self.logger.setLevel(getattr(logging, log_level.upper()))
         self.logger.handlers.clear()  # Clear existing handlers
-        
+
         self.enable_detailed = enable_detailed
-        
+        self.log_dir = Path("logs")
+        self.symbol_handlers: Dict[str, logging.FileHandler] = {}
+
         # Create logs directory if it doesn't exist
         if log_to_file:
-            log_dir = Path("logs")
-            log_dir.mkdir(exist_ok=True)
-            
-            # Create file handler with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_file = log_dir / f"trading_{timestamp}.log"
-            
-            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            self.log_dir.mkdir(exist_ok=True)
+
+            # Create date-based directory structure: logs/YYYY-MM-DD/
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            date_dir = self.log_dir / date_str
+            date_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create master log file: logs/YYYY-MM-DD/main.log
+            master_log_file = date_dir / "main.log"
+
+            file_handler = logging.FileHandler(master_log_file, encoding='utf-8')
             file_handler.setLevel(logging.DEBUG)
-            file_formatter = logging.Formatter(
-                '%(asctime)s | %(levelname)-8s | %(message)s',
+
+            # Use UTC formatter for file logs
+            file_formatter = UTCFormatter(
+                '%(asctime)s UTC | %(levelname)-8s | %(message)s',
                 datefmt='%Y-%m-%d %H:%M:%S'
             )
             file_handler.setFormatter(file_formatter)
             self.logger.addHandler(file_handler)
-        
-        # Create console handler with colors
+
+        # Create console handler with colors (still using UTC)
         if log_to_console:
             console_handler = colorlog.StreamHandler()
             console_handler.setLevel(getattr(logging, log_level.upper()))
-            console_formatter = colorlog.ColoredFormatter(
-                '%(log_color)s%(asctime)s | %(levelname)-8s | %(message)s',
+
+            # Create custom colored formatter with UTC
+            class UTCColoredFormatter(colorlog.ColoredFormatter):
+                def formatTime(self, record, datefmt=None):
+                    dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
+                    if datefmt:
+                        s = dt.strftime(datefmt)
+                    else:
+                        s = dt.isoformat(timespec='seconds')
+                    return s
+
+            console_formatter = UTCColoredFormatter(
+                '%(log_color)s%(asctime)s UTC | %(levelname)-8s | %(message)s',
                 datefmt='%H:%M:%S',
                 log_colors={
                     'DEBUG': 'cyan',
@@ -67,35 +124,115 @@ class TradingLogger:
             )
             console_handler.setFormatter(console_formatter)
             self.logger.addHandler(console_handler)
-    
+
+    def _get_symbol_handler(self, symbol: str) -> Optional[logging.FileHandler]:
+        """
+        Get or create a file handler for a specific symbol.
+
+        Args:
+            symbol: Trading symbol name
+
+        Returns:
+            File handler for the symbol, or None if file logging is disabled
+        """
+        # Check if handler already exists
+        if symbol in self.symbol_handlers:
+            return self.symbol_handlers[symbol]
+
+        # Create new handler for this symbol
+        try:
+            # Create date-based directory structure: logs/YYYY-MM-DD/
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            date_dir = self.log_dir / date_str
+            date_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create symbol-specific log file: logs/YYYY-MM-DD/SYMBOL.log
+            log_file = date_dir / f"{symbol}.log"
+
+            handler = logging.FileHandler(log_file, encoding='utf-8')
+            handler.setLevel(logging.DEBUG)
+
+            # Use UTC formatter
+            formatter = UTCFormatter(
+                '%(asctime)s UTC | %(levelname)-8s | %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            handler.setFormatter(formatter)
+
+            # Store handler
+            self.symbol_handlers[symbol] = handler
+
+            return handler
+        except Exception as e:
+            self.logger.error(f"Failed to create log handler for {symbol}: {e}")
+            return None
+
+    def _log_to_symbol_file(self, level: int, message: str, symbol: str):
+        """
+        Log a message to a symbol-specific file.
+
+        Args:
+            level: Logging level
+            message: Log message
+            symbol: Trading symbol
+        """
+        handler = self._get_symbol_handler(symbol)
+        if handler:
+            # Create a log record
+            record = self.logger.makeRecord(
+                self.logger.name,
+                level,
+                "(symbol_log)",
+                0,
+                message,
+                (),
+                None
+            )
+            handler.emit(record)
+
     def info(self, message: str, symbol: Optional[str] = None):
         """Log info message"""
         if symbol:
+            # Log to symbol-specific file
+            self._log_to_symbol_file(logging.INFO, message, symbol)
+            # Add symbol prefix for master log
             message = f"[{symbol}] {message}"
         self.logger.info(message)
-    
+
     def debug(self, message: str, symbol: Optional[str] = None):
         """Log debug message (only if detailed logging enabled)"""
         if self.enable_detailed:
             if symbol:
+                # Log to symbol-specific file
+                self._log_to_symbol_file(logging.DEBUG, message, symbol)
+                # Add symbol prefix for master log
                 message = f"[{symbol}] {message}"
             self.logger.debug(message)
-    
+
     def warning(self, message: str, symbol: Optional[str] = None):
         """Log warning message"""
         if symbol:
+            # Log to symbol-specific file
+            self._log_to_symbol_file(logging.WARNING, message, symbol)
+            # Add symbol prefix for master log
             message = f"[{symbol}] {message}"
         self.logger.warning(message)
-    
+
     def error(self, message: str, symbol: Optional[str] = None):
         """Log error message"""
         if symbol:
+            # Log to symbol-specific file
+            self._log_to_symbol_file(logging.ERROR, message, symbol)
+            # Add symbol prefix for master log
             message = f"[{symbol}] {message}"
         self.logger.error(message)
-    
+
     def critical(self, message: str, symbol: Optional[str] = None):
         """Log critical message"""
         if symbol:
+            # Log to symbol-specific file
+            self._log_to_symbol_file(logging.CRITICAL, message, symbol)
+            # Add symbol prefix for master log
             message = f"[{symbol}] {message}"
         self.logger.critical(message)
     

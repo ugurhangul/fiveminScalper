@@ -50,7 +50,12 @@ class SymbolStrategy:
             symbol,
             SymbolParameters()  # Default parameters
         )
-        
+
+        # Set initial confirmation states based on config
+        # Adaptive filter will manage these based on performance
+        self.symbol_params.volume_confirmation_enabled = config.adaptive_filters.start_with_filters_enabled
+        self.symbol_params.divergence_confirmation_enabled = config.adaptive_filters.start_with_filters_enabled
+
         self.logger.info(f"Symbol category: {SymbolOptimizer.get_category_name(self.category)}", symbol)
         
         # Initialize components
@@ -130,8 +135,6 @@ class SymbolStrategy:
     
     def on_5m_candle(self):
         """Process new 5-minute candle"""
-        self.logger.debug("=== NEW 5M CANDLE ===", self.symbol)
-        
         # Check for new 4H candle first
         if self.candle_processor.is_new_4h_candle():
             self.on_4h_candle()

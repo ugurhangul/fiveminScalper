@@ -5,7 +5,7 @@ Main entry point for the trading system.
 import sys
 import signal
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from src.config.config import config
@@ -166,14 +166,14 @@ class TradingBot:
         # Start the controller (this starts all symbol threads)
         self.controller.start()
 
-        last_status_log = datetime.now()
+        last_status_log = datetime.now(timezone.utc)
 
         while self.is_running:
             try:
                 # Log status every 5 minutes
-                if (datetime.now() - last_status_log).total_seconds() >= 300:
+                if (datetime.now(timezone.utc) - last_status_log).total_seconds() >= 300:
                     self.controller.log_status()
-                    last_status_log = datetime.now()
+                    last_status_log = datetime.now(timezone.utc)
 
                 # Sleep for 10 seconds
                 time.sleep(10)

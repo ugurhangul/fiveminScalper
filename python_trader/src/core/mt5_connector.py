@@ -186,6 +186,9 @@ class MT5Connector:
                 'max_lot': info.volume_max,
                 'lot_step': info.volume_step,
                 'contract_size': info.trade_contract_size,
+                'filling_mode': info.filling_mode,
+                'stops_level': info.trade_stops_level,
+                'freeze_level': info.trade_freeze_level,
             }
             
             # Cache it
@@ -196,7 +199,19 @@ class MT5Connector:
         except Exception as e:
             self.logger.error(f"Error getting symbol info for {symbol}: {e}")
             return None
-    
+
+    def clear_symbol_info_cache(self, symbol: Optional[str] = None):
+        """
+        Clear symbol info cache.
+
+        Args:
+            symbol: Symbol to clear from cache, or None to clear all
+        """
+        if symbol:
+            self._symbol_info_cache.pop(symbol, None)
+        else:
+            self._symbol_info_cache.clear()
+
     def get_account_balance(self) -> float:
         """Get current account balance"""
         if not self.is_connected:

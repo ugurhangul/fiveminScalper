@@ -254,11 +254,11 @@ void MonitorEntries()
       return;
    }
 
-   // Check if we're in the restricted trading period (00:00-08:00 UTC)
+   // Check if we're in the restricted trading period (04:00-08:00 UTC)
    if(IsInCandleFormationPeriod())
    {
       if(EnableDetailedLogging)
-         LogMessage("MonitorEntries: Trading suspended - Restricted period (00:00-08:00 UTC)");
+         LogMessage("MonitorEntries: Trading suspended - Restricted period (04:00-08:00 UTC)");
       return;
    }
 

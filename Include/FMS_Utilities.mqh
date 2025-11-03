@@ -103,22 +103,23 @@ bool IsNew4HCandle()
       // Update last seen time (even if we skip this candle)
       g_lastSeen4HCandleTime = current4HTime;
 
-      // If filter is enabled, only process first 4H candle of day
-      // NOTE: iTime() returns opening time (00:00), chart displays closing time (04:00)
+      // If filter is enabled, only process second 4H candle of day
+      // NOTE: Both iTime() and chart display opening time (04:00 UTC)
+      // Second 4H candle: opens 04:00 UTC, closes 08:00 UTC
       if(UseOnly00UTCCandle)
       {
-         // Check if the closed candle opened at 00:00 UTC (first 4H candle)
-         if(timeStruct.hour != 0)
+         // Check if the closed candle opened at 04:00 UTC (second 4H candle)
+         if(timeStruct.hour != 4)
          {
             LogMessage("SKIPPING: Candle opening hour is " + IntegerToString(timeStruct.hour) + ":00 UTC");
-            LogMessage("Only processing first 4H candle (opens 00:00, chart shows 04:00)");
+            LogMessage("Only processing second 4H candle (opens 04:00 UTC, chart shows 04:00 UTC)");
             LogMessage("Updated g_lastSeen4HCandleTime but NOT g_last4HCandleTime");
             return false;
          }
          else
          {
-            LogMessage("PROCESSING: First 4H candle of day detected");
-            LogMessage("Opening time: 00:00 UTC, Closing time: 04:00 UTC (shown on chart)");
+            LogMessage("PROCESSING: Second 4H candle of day detected");
+            LogMessage("Opening time: 04:00 UTC (shown on chart), Closing time: 08:00 UTC");
          }
       }
       else
@@ -155,13 +156,14 @@ bool HasOpenPosition(ENUM_ORDER_TYPE orderType)
 }
 
 //+------------------------------------------------------------------+
-//| Check if in restricted trading period (00:00-08:00 UTC)          |
+//| Check if in restricted trading period (04:00-08:00 UTC)          |
+//| Trading is suspended only while the second 4H candle is forming  |
 //+------------------------------------------------------------------+
 bool IsInCandleFormationPeriod()
 {
    MqlDateTime currentTime;
    TimeToStruct(TimeCurrent(), currentTime);
-   return (currentTime.hour >= 0 && currentTime.hour < 8);
+   return (currentTime.hour >= 4 && currentTime.hour < 8);
 }
 
 //+------------------------------------------------------------------+

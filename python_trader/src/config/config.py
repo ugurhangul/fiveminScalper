@@ -27,6 +27,7 @@ class RiskConfig:
     risk_percent_per_trade: float = 1.0
     max_lot_size: float = 10.0
     min_lot_size: float = 0.01
+    max_positions: int = 10
 
 
 @dataclass
@@ -138,8 +139,9 @@ class TradingConfig:
         # Risk management
         self.risk = RiskConfig(
             risk_percent_per_trade=float(os.getenv('RISK_PERCENT_PER_TRADE', '1.0')),
-            max_lot_size=float(os.getenv('MAX_LOT_SIZE', '10.0')),
-            min_lot_size=float(os.getenv('MIN_LOT_SIZE', '0.01'))
+            max_lot_size=float(os.getenv('MAX_LOT_SIZE', '0.01')),
+            min_lot_size=float(os.getenv('MIN_LOT_SIZE', '0.01')),
+            max_positions=int(os.getenv('MAX_POSITIONS', '1000'))
         )
         
         # Trailing stop

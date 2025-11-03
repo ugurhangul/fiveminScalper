@@ -13,9 +13,9 @@
 #include "FMS_ChartVisual.mqh"
 
 //+------------------------------------------------------------------+
-//| Find the most recent first 4H candle of day                      |
-//| NOTE: iTime() returns opening time (00:00)                       |
-//|       Chart displays closing time (04:00)                        |
+//| Find the most recent second 4H candle of day                     |
+//| NOTE: Both iTime() and chart display opening time (04:00 UTC)    |
+//| Second 4H candle: opens 04:00 UTC, closes 08:00 UTC             |
 //+------------------------------------------------------------------+
 datetime Find00UTCCandle()
 {
@@ -26,9 +26,9 @@ datetime Find00UTCCandle()
       MqlDateTime timeStruct;
       TimeToStruct(candleTime, timeStruct);
 
-      if(timeStruct.hour == 4)  // Opening time is 00:00 (chart shows 04:00)
+      if(timeStruct.hour == 4)  // Second candle opens at 04:00 UTC
       {
-         return candleTime;  // Returns opening time (00:00)
+         return candleTime;  // Returns opening time (04:00 UTC)
       }
    }
 
@@ -36,9 +36,9 @@ datetime Find00UTCCandle()
 }
 
 //+------------------------------------------------------------------+
-//| Find the index of the most recent first 4H candle of day         |
-//| NOTE: iTime() returns opening time (00:00)                       |
-//|       Chart displays closing time (04:00)                        |
+//| Find the index of the most recent second 4H candle of day        |
+//| NOTE: Both iTime() and chart display opening time (04:00 UTC)    |
+//| Second 4H candle: opens 04:00 UTC, closes 08:00 UTC             |
 //+------------------------------------------------------------------+
 int Find00UTCCandleIndex()
 {
@@ -49,7 +49,7 @@ int Find00UTCCandleIndex()
       MqlDateTime timeStruct;
       TimeToStruct(candleTime, timeStruct);
 
-      if(timeStruct.hour == 4)  // Opening time is 00:00 (chart shows 04:00)
+      if(timeStruct.hour == 4)  // Second candle opens at 04:00 UTC
       {
          return i;
       }

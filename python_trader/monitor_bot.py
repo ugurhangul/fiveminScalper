@@ -10,7 +10,7 @@ Shows real-time status of the trading bot including:
 
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -100,7 +100,7 @@ def display_status():
     print("=" * 80)
     print("FiveMinScalper - Bot Monitor")
     print("=" * 80)
-    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     print()
     
     # Get latest log file

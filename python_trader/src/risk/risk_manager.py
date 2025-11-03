@@ -60,23 +60,19 @@ class RiskManager:
         # Get point value and contract size
         point = symbol_info['point']
         tick_value = symbol_info['tick_value']
-        tick_size = symbol_info['tick_size']
-        contract_size = symbol_info['contract_size']
-        
-        # Calculate pip value per lot
-        # For forex: pip_value = (tick_value / tick_size) * point
-        # For other instruments, we use tick_value directly
-        pip_value_per_lot = (tick_value / tick_size) * point if tick_size > 0 else tick_value
-        
-        # Calculate lot size
-        # lot_size = risk_amount / (sl_distance_in_pips * pip_value_per_lot)
-        sl_distance_in_pips = sl_distance / point if point > 0 else sl_distance
-        
-        if pip_value_per_lot <= 0 or sl_distance_in_pips <= 0:
-            self.logger.error("Invalid pip value or SL distance", symbol)
+
+        # Calculate stop loss distance in points
+        # This matches MQL5: stopLossPoints = MathAbs(entryPrice - stopLoss) / point
+        sl_distance_in_points = sl_distance / point if point > 0 else sl_distance
+
+        if tick_value <= 0 or sl_distance_in_points <= 0:
+            self.logger.error("Invalid tick value or SL distance", symbol)
             return 0.0
-        
-        lot_size = risk_amount / (sl_distance_in_pips * pip_value_per_lot)
+
+        # Calculate lot size
+        # This matches MQL5: lotSize = riskAmount / (stopLossPoints * tickValue)
+        # tick_value already represents the value per lot per point
+        lot_size = risk_amount / (sl_distance_in_points * tick_value)
         
         # Normalize to lot step
         min_lot = symbol_info['min_lot']
@@ -102,8 +98,8 @@ class RiskManager:
         self.logger.info(f"Risk Amount: ${risk_amount:.2f}", symbol)
         self.logger.info(f"Entry Price: {entry_price:.5f}", symbol)
         self.logger.info(f"Stop Loss: {stop_loss:.5f}", symbol)
-        self.logger.info(f"SL Distance: {sl_distance:.5f} ({sl_distance_in_pips:.1f} pips)", symbol)
-        self.logger.info(f"Pip Value/Lot: ${pip_value_per_lot:.2f}", symbol)
+        self.logger.info(f"SL Distance: {sl_distance:.5f} ({sl_distance_in_points:.1f} points)", symbol)
+        self.logger.info(f"Tick Value: ${tick_value:.2f}", symbol)
         self.logger.info(f"Calculated Lot Size: {lot_size:.2f}", symbol)
         self.logger.info(f"Min/Max Lot: {min_lot:.2f} / {max_lot:.2f}", symbol)
         self.logger.separator()
@@ -219,12 +215,13 @@ class RiskManager:
         balance = self.connector.get_account_balance()
         point = symbol_info['point']
         tick_value = symbol_info['tick_value']
-        tick_size = symbol_info['tick_size']
-        
-        pip_value_per_lot = (tick_value / tick_size) * point if tick_size > 0 else tick_value
-        sl_distance_in_pips = sl_distance / point if point > 0 else sl_distance
-        
-        risk_amount = sl_distance_in_pips * pip_value_per_lot * lot_size
+
+        # Calculate SL distance in points (matches MQL5 formula)
+        sl_distance_in_points = sl_distance / point if point > 0 else sl_distance
+
+        # Calculate risk amount: stopLossPoints * tickValue * lotSize
+        # This matches the inverse of the lot size calculation
+        risk_amount = sl_distance_in_points * tick_value * lot_size
         risk_percent = (risk_amount / balance) * 100.0 if balance > 0 else 0
         
         # Check if risk exceeds maximum
@@ -246,32 +243,25 @@ class RiskManager:
     def can_open_new_position(self, magic_number: int) -> Tuple[bool, str]:
         """
         Check if we can open a new position.
-        
+
         Args:
             magic_number: Magic number to filter positions
-            
+
         Returns:
             Tuple of (can_open, reason)
         """
         # Get current positions
         positions = self.connector.get_positions(magic_number=magic_number)
-        
+
         # Check max positions
         if len(positions) >= self.risk_config.max_positions:
             return False, f"Maximum positions ({self.risk_config.max_positions}) reached"
-        
-        # Check account equity
-        equity = self.connector.get_account_equity()
+
+        # Check account balance is valid
         balance = self.connector.get_account_balance()
-        
-        if equity <= 0 or balance <= 0:
-            return False, "Invalid account equity or balance"
-        
-        # Check drawdown
-        drawdown_percent = ((balance - equity) / balance) * 100.0 if balance > 0 else 0
-        
-        if drawdown_percent > 20.0:  # Example: 20% max drawdown
-            return False, f"Drawdown too high: {drawdown_percent:.2f}%"
-        
+
+        if balance <= 0:
+            return False, "Invalid account balance"
+
         return True, ""
 

@@ -1,7 +1,7 @@
 """
 Symbol performance tracking and auto-disable/enable logic.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from src.models.data_models import SymbolStats
 from src.config.config import SymbolAdaptationConfig
@@ -95,7 +95,7 @@ class SymbolTracker:
             reason: Reason for disabling
         """
         self.is_disabled = True
-        self.disabled_at = datetime.now()
+        self.disabled_at = datetime.now(timezone.utc)
         
         self.logger.symbol_disabled(self.symbol, reason)
         self.logger.info(
@@ -112,10 +112,10 @@ class SymbolTracker:
         """
         if not self.is_disabled or self.disabled_at is None:
             return False
-        
+
         # Check if cooling period has passed
         cooling_period = timedelta(hours=self.config.cooling_period_hours)
-        if datetime.now() - self.disabled_at >= cooling_period:
+        if datetime.now(timezone.utc) - self.disabled_at >= cooling_period:
             self._reenable_symbol()
             return True
         
