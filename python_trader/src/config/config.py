@@ -17,7 +17,9 @@ load_dotenv()
 class StrategyConfig:
     """Strategy settings"""
     entry_offset_percent: float = 0.01
-    stop_loss_offset_percent: float = 0.02
+    stop_loss_offset_percent: float = 0.02  # Deprecated: use stop_loss_offset_points instead
+    stop_loss_offset_points: int = 100  # Stop loss offset in points (recommended)
+    use_point_based_sl: bool = True  # Use point-based SL calculation instead of percentage
     risk_reward_ratio: float = 2.0
 
 
@@ -133,6 +135,8 @@ class TradingConfig:
         self.strategy = StrategyConfig(
             entry_offset_percent=float(os.getenv('ENTRY_OFFSET_PERCENT', '0.01')),
             stop_loss_offset_percent=float(os.getenv('STOP_LOSS_OFFSET_PERCENT', '0.02')),
+            stop_loss_offset_points=int(os.getenv('STOP_LOSS_OFFSET_POINTS', '100')),
+            use_point_based_sl=os.getenv('USE_POINT_BASED_SL', 'true').lower() == 'true',
             risk_reward_ratio=float(os.getenv('RISK_REWARD_RATIO', '2.0'))
         )
         

@@ -70,7 +70,8 @@ class SymbolStrategy:
             candle_processor=self.candle_processor,
             indicators=indicators,
             strategy_config=config.strategy,
-            symbol_params=self.symbol_params
+            symbol_params=self.symbol_params,
+            connector=connector
         )
         
         self.adaptive_filter = AdaptiveFilter(

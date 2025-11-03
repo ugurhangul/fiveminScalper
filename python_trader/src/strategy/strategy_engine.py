@@ -19,27 +19,29 @@ class StrategyEngine:
     
     def __init__(self, symbol: str, candle_processor: CandleProcessor,
                  indicators: TechnicalIndicators, strategy_config: StrategyConfig,
-                 symbol_params: SymbolParameters):
+                 symbol_params: SymbolParameters, connector=None):
         """
         Initialize strategy engine.
-        
+
         Args:
             symbol: Symbol name
             candle_processor: Candle processor instance
             indicators: Technical indicators instance
             strategy_config: Strategy configuration
             symbol_params: Symbol-specific parameters
+            connector: MT5 connector for symbol info (optional, for point-based SL)
         """
         self.symbol = symbol
         self.candle_processor = candle_processor
         self.indicators = indicators
         self.strategy_config = strategy_config
         self.symbol_params = symbol_params
+        self.connector = connector
         self.logger = get_logger()
-        
+
         # Breakout state tracking
         self.breakout_state = BreakoutState()
-        
+
         # Volume tracking
         self.breakout_volume = 0
         self.reversal_volume = 0
@@ -359,6 +361,46 @@ class StrategyEngine:
             self.symbol
         )
 
+    def _calculate_sl_offset(self, reference_price: float) -> float:
+        """
+        Calculate stop loss offset based on configuration.
+
+        Uses point-based calculation if enabled (recommended for consistent risk across symbols),
+        otherwise falls back to percentage-based calculation.
+
+        Args:
+            reference_price: The reference price (lowest_low for BUY, highest_high for SELL)
+
+        Returns:
+            Stop loss offset in price units
+        """
+        if self.strategy_config.use_point_based_sl and self.connector is not None:
+            # Point-based calculation (recommended)
+            symbol_info = self.connector.get_symbol_info(self.symbol)
+            if symbol_info is not None:
+                point = symbol_info['point']
+                # Convert points to price offset
+                sl_offset = self.strategy_config.stop_loss_offset_points * point
+
+                self.logger.debug(
+                    f"SL offset (point-based): {self.strategy_config.stop_loss_offset_points} points = {sl_offset:.5f}",
+                    self.symbol
+                )
+                return sl_offset
+            else:
+                self.logger.warning(
+                    "Failed to get symbol info for point-based SL, falling back to percentage",
+                    self.symbol
+                )
+
+        # Percentage-based calculation (legacy/fallback)
+        sl_offset = reference_price * (self.strategy_config.stop_loss_offset_percent / 100.0)
+        self.logger.debug(
+            f"SL offset (percentage-based): {self.strategy_config.stop_loss_offset_percent}% = {sl_offset:.5f}",
+            self.symbol
+        )
+        return sl_offset
+
     def _generate_buy_signal(self, candle_4h: FourHourCandle,
                             candle_5m: CandleData) -> TradeSignal:
         """
@@ -385,8 +427,8 @@ class StrategyEngine:
         entry_price = max(candle_5m.close, candle_4h.low + entry_offset)
 
         # Stop Loss: Below the LOWEST LOW (not 4H low!)
-        # Divide by 100 to convert percent to decimal (matches MQL5)
-        sl_offset = lowest_low * (self.strategy_config.stop_loss_offset_percent / 100.0)
+        # Use point-based or percentage-based calculation
+        sl_offset = self._calculate_sl_offset(lowest_low)
         stop_loss = lowest_low - sl_offset
 
         # Take Profit: Based on R:R ratio
@@ -445,8 +487,8 @@ class StrategyEngine:
         entry_price = min(candle_5m.close, candle_4h.high - entry_offset)
 
         # Stop Loss: Above the HIGHEST HIGH (not 4H high!)
-        # Divide by 100 to convert percent to decimal (matches MQL5)
-        sl_offset = highest_high * (self.strategy_config.stop_loss_offset_percent / 100.0)
+        # Use point-based or percentage-based calculation
+        sl_offset = self._calculate_sl_offset(highest_high)
         stop_loss = highest_high + sl_offset
 
         # Take Profit: Based on R:R ratio

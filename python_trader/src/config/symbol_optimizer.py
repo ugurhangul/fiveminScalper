@@ -19,26 +19,30 @@ class SymbolOptimizer:
             'EURGBP', 'EURJPY', 'GBPJPY', 'EURCHF',
             'EURAUD', 'EURCAD', 'GBPCHF', 'GBPAUD',
             'AUDNZD', 'AUDCAD', 'AUDJPY', 'CADJPY',
-            'CHFJPY', 'NZDJPY'
+            'CHFJPY', 'NZDJPY', 'EURNZD', 'GBPCAD',
+            'GBPNZD', 'NZDCAD', 'NZDCHF'
         ],
         SymbolCategory.EXOTIC_FOREX: [
             'TRY', 'ZAR', 'MXN', 'BRL', 'RUB', 'HKD',
-            'SGD', 'THB', 'NOK', 'SEK', 'DKK', 'PLN'
+            'SGD', 'THB', 'NOK', 'SEK', 'DKK', 'PLN',
+            'CZK', 'HUF', 'ILS', 'CNH'
         ],
         SymbolCategory.METALS: [
-            'XAUUSD', 'GOLD', 'XAGUSD', 'SILVER', 'XAU', 'XAG'
+            'XAUUSD', 'GOLD', 'XAGUSD', 'SILVER', 'XAU', 'XAG',
+            'XALUSD', 'XCUUSD', 'XPBUSD', 'XPDUSD', 'XPTUSD', 'XZNUSD'
         ],
         SymbolCategory.INDICES: [
-            'SPX', 'SP500', 'NAS100', 'NASDAQ', 'US30', 'DOW',
-            'DAX', 'GER', 'FTSE', 'UK100', 'CAC', 'FRA',
-            'NIKKEI', 'JPN', 'ASX', 'AUS'
+            'SPX', 'SP500', 'US500', 'NAS100', 'NASDAQ', 'USTEC', 'US30', 'DOW',
+            'DAX', 'DE30', 'GER', 'FTSE', 'UK100', 'CAC', 'FR40', 'FRA',
+            'NIKKEI', 'JP225', 'JPN', 'ASX', 'AUS', 'HK50', 'DXY'
         ],
         SymbolCategory.CRYPTO: [
             'BTC', 'ETH', 'XRP', 'LTC', 'BCH', 'ADA',
-            'DOT', 'LINK', 'DOGE', 'CRYPTO'
+            'DOT', 'LINK', 'DOGE', 'CRYPTO', 'BNB', 'SOL',
+            'UNI', 'FIL', 'BAT', 'XTZ'
         ],
         SymbolCategory.COMMODITIES: [
-            'WTI', 'BRENT', 'OIL', 'USOIL', 'UKOIL', 'NGAS', 'GAS'
+            'WTI', 'BRENT', 'OIL', 'USOIL', 'UKOIL', 'NGAS', 'GAS', 'XNG'
         ]
     }
     

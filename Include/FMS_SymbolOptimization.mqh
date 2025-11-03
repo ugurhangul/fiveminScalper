@@ -35,7 +35,10 @@ ENUM_SYMBOL_CATEGORY DetectSymbolCategory(string symbol)
       StringFind(symbol, "GBPCHF") >= 0 || StringFind(symbol, "GBPAUD") >= 0 ||
       StringFind(symbol, "AUDNZD") >= 0 || StringFind(symbol, "AUDCAD") >= 0 ||
       StringFind(symbol, "AUDJPY") >= 0 || StringFind(symbol, "CADJPY") >= 0 ||
-      StringFind(symbol, "CHFJPY") >= 0 || StringFind(symbol, "NZDJPY") >= 0)
+      StringFind(symbol, "CHFJPY") >= 0 || StringFind(symbol, "NZDJPY") >= 0 ||
+      StringFind(symbol, "EURNZD") >= 0 || StringFind(symbol, "GBPCAD") >= 0 ||
+      StringFind(symbol, "GBPNZD") >= 0 || StringFind(symbol, "NZDCAD") >= 0 ||
+      StringFind(symbol, "NZDCHF") >= 0)
    {
       return SYMBOL_MINOR_FOREX;
    }
@@ -46,7 +49,9 @@ ENUM_SYMBOL_CATEGORY DetectSymbolCategory(string symbol)
       StringFind(symbol, "RUB") >= 0 || StringFind(symbol, "HKD") >= 0 ||
       StringFind(symbol, "SGD") >= 0 || StringFind(symbol, "THB") >= 0 ||
       StringFind(symbol, "NOK") >= 0 || StringFind(symbol, "SEK") >= 0 ||
-      StringFind(symbol, "DKK") >= 0 || StringFind(symbol, "PLN") >= 0)
+      StringFind(symbol, "DKK") >= 0 || StringFind(symbol, "PLN") >= 0 ||
+      StringFind(symbol, "CZK") >= 0 || StringFind(symbol, "HUF") >= 0 ||
+      StringFind(symbol, "ILS") >= 0 || StringFind(symbol, "CNH") >= 0)
    {
       return SYMBOL_EXOTIC_FOREX;
    }
@@ -54,20 +59,27 @@ ENUM_SYMBOL_CATEGORY DetectSymbolCategory(string symbol)
    // Precious Metals (Gold, Silver - high volatility, trending)
    if(StringFind(symbol, "XAUUSD") >= 0 || StringFind(symbol, "GOLD") >= 0 ||
       StringFind(symbol, "XAGUSD") >= 0 || StringFind(symbol, "SILVER") >= 0 ||
-      StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "XAG") >= 0)
+      StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "XAG") >= 0 ||
+      StringFind(symbol, "XALUSD") >= 0 || StringFind(symbol, "XCUUSD") >= 0 ||
+      StringFind(symbol, "XPBUSD") >= 0 || StringFind(symbol, "XPDUSD") >= 0 ||
+      StringFind(symbol, "XPTUSD") >= 0 || StringFind(symbol, "XZNUSD") >= 0)
    {
       return SYMBOL_METALS;
    }
 
    // Stock Indices (trending, moderate to high volatility)
    if(StringFind(symbol, "SPX") >= 0 || StringFind(symbol, "SP500") >= 0 ||
-      StringFind(symbol, "NAS100") >= 0 || StringFind(symbol, "NASDAQ") >= 0 ||
+      StringFind(symbol, "US500") >= 0 || StringFind(symbol, "NAS100") >= 0 ||
+      StringFind(symbol, "NASDAQ") >= 0 || StringFind(symbol, "USTEC") >= 0 ||
       StringFind(symbol, "US30") >= 0 || StringFind(symbol, "DOW") >= 0 ||
-      StringFind(symbol, "DAX") >= 0 || StringFind(symbol, "GER") >= 0 ||
-      StringFind(symbol, "FTSE") >= 0 || StringFind(symbol, "UK100") >= 0 ||
-      StringFind(symbol, "CAC") >= 0 || StringFind(symbol, "FRA") >= 0 ||
-      StringFind(symbol, "NIKKEI") >= 0 || StringFind(symbol, "JPN") >= 0 ||
-      StringFind(symbol, "ASX") >= 0 || StringFind(symbol, "AUS") >= 0)
+      StringFind(symbol, "DAX") >= 0 || StringFind(symbol, "DE30") >= 0 ||
+      StringFind(symbol, "GER") >= 0 || StringFind(symbol, "FTSE") >= 0 ||
+      StringFind(symbol, "UK100") >= 0 || StringFind(symbol, "CAC") >= 0 ||
+      StringFind(symbol, "FR40") >= 0 || StringFind(symbol, "FRA") >= 0 ||
+      StringFind(symbol, "NIKKEI") >= 0 || StringFind(symbol, "JP225") >= 0 ||
+      StringFind(symbol, "JPN") >= 0 || StringFind(symbol, "ASX") >= 0 ||
+      StringFind(symbol, "AUS") >= 0 || StringFind(symbol, "HK50") >= 0 ||
+      StringFind(symbol, "DXY") >= 0)
    {
       return SYMBOL_INDICES;
    }
@@ -77,7 +89,10 @@ ENUM_SYMBOL_CATEGORY DetectSymbolCategory(string symbol)
       StringFind(symbol, "XRP") >= 0 || StringFind(symbol, "LTC") >= 0 ||
       StringFind(symbol, "BCH") >= 0 || StringFind(symbol, "ADA") >= 0 ||
       StringFind(symbol, "DOT") >= 0 || StringFind(symbol, "LINK") >= 0 ||
-      StringFind(symbol, "DOGE") >= 0 || StringFind(symbol, "CRYPTO") >= 0)
+      StringFind(symbol, "DOGE") >= 0 || StringFind(symbol, "CRYPTO") >= 0 ||
+      StringFind(symbol, "BNB") >= 0 || StringFind(symbol, "SOL") >= 0 ||
+      StringFind(symbol, "UNI") >= 0 || StringFind(symbol, "FIL") >= 0 ||
+      StringFind(symbol, "BAT") >= 0 || StringFind(symbol, "XTZ") >= 0)
    {
       return SYMBOL_CRYPTO;
    }
@@ -86,7 +101,7 @@ ENUM_SYMBOL_CATEGORY DetectSymbolCategory(string symbol)
    if(StringFind(symbol, "WTI") >= 0 || StringFind(symbol, "BRENT") >= 0 ||
       StringFind(symbol, "OIL") >= 0 || StringFind(symbol, "USOIL") >= 0 ||
       StringFind(symbol, "UKOIL") >= 0 || StringFind(symbol, "NGAS") >= 0 ||
-      StringFind(symbol, "GAS") >= 0)
+      StringFind(symbol, "GAS") >= 0 || StringFind(symbol, "XNG") >= 0)
    {
       return SYMBOL_COMMODITIES;
    }
