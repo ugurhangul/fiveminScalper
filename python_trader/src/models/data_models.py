@@ -240,6 +240,10 @@ class TradeSignal:
     reason: str = ""
     max_spread_percent: float = 0.1  # Maximum allowed spread as percentage of price (e.g., 0.1 = 0.1%)
 
+    # Confirmation tracking (for allowing second position)
+    volume_confirmed: bool = False  # Both breakout and reversal volume confirmed
+    divergence_confirmed: bool = False  # Divergence confirmed at breakout
+
     @property
     def risk(self) -> float:
         return abs(self.entry_price - self.stop_loss)
@@ -253,4 +257,9 @@ class TradeSignal:
         if self.risk == 0:
             return 0.0
         return self.reward / self.risk
+
+    @property
+    def all_confirmations_met(self) -> bool:
+        """Check if all confirmations were met for this signal"""
+        return self.volume_confirmed and self.divergence_confirmed
 

@@ -453,6 +453,18 @@ class StrategyEngine:
         reward = risk * self.strategy_config.risk_reward_ratio
         take_profit = entry_price + reward
 
+        # Determine if confirmations were met
+        volume_confirmed = False
+        divergence_confirmed = False
+
+        if self.symbol_params.volume_confirmation_enabled:
+            # Both breakout and reversal volume must be confirmed
+            volume_confirmed = True  # If we got here, volume checks passed
+
+        if self.symbol_params.divergence_confirmation_enabled:
+            # Divergence was checked at breakout stage
+            divergence_confirmed = True  # If we got here, divergence check passed
+
         signal = TradeSignal(
             symbol=self.symbol,
             signal_type=PositionType.BUY,
@@ -462,7 +474,9 @@ class StrategyEngine:
             lot_size=0.0,  # Will be calculated by risk manager
             timestamp=candle_5m.time,
             reason="False breakout below 4H low with reversal",
-            max_spread_percent=self.symbol_params.max_spread_percent
+            max_spread_percent=self.symbol_params.max_spread_percent,
+            volume_confirmed=volume_confirmed,
+            divergence_confirmed=divergence_confirmed
         )
 
         self.logger.info("=" * 60, self.symbol)
@@ -534,6 +548,18 @@ class StrategyEngine:
         reward = risk * self.strategy_config.risk_reward_ratio
         take_profit = entry_price - reward
 
+        # Determine if confirmations were met
+        volume_confirmed = False
+        divergence_confirmed = False
+
+        if self.symbol_params.volume_confirmation_enabled:
+            # Both breakout and reversal volume must be confirmed
+            volume_confirmed = True  # If we got here, volume checks passed
+
+        if self.symbol_params.divergence_confirmation_enabled:
+            # Divergence was checked at breakout stage
+            divergence_confirmed = True  # If we got here, divergence check passed
+
         signal = TradeSignal(
             symbol=self.symbol,
             signal_type=PositionType.SELL,
@@ -543,7 +569,9 @@ class StrategyEngine:
             lot_size=0.0,  # Will be calculated by risk manager
             timestamp=candle_5m.time,
             reason="False breakout above 4H high with reversal",
-            max_spread_percent=self.symbol_params.max_spread_percent
+            max_spread_percent=self.symbol_params.max_spread_percent,
+            volume_confirmed=volume_confirmed,
+            divergence_confirmed=divergence_confirmed
         )
 
         self.logger.info("=" * 60, self.symbol)

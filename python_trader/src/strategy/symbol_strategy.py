@@ -161,19 +161,33 @@ class SymbolStrategy:
     def _execute_signal(self, signal: TradeSignal):
         """
         Execute a trade signal.
-        
+
         Args:
             signal: Trade signal to execute
         """
         self.logger.info("=" * 60, self.symbol)
         self.logger.info("*** TRADE SIGNAL RECEIVED ***", self.symbol)
         self.logger.info("=" * 60, self.symbol)
-        
+
+        # Log confirmation status
+        if signal.all_confirmations_met:
+            self.logger.info(">>> ALL CONFIRMATIONS MET <<<", self.symbol)
+            self.logger.info(f"Volume Confirmed: {signal.volume_confirmed}", self.symbol)
+            self.logger.info(f"Divergence Confirmed: {signal.divergence_confirmed}", self.symbol)
+        else:
+            self.logger.info("Confirmations status:", self.symbol)
+            self.logger.info(f"Volume Confirmed: {signal.volume_confirmed}", self.symbol)
+            self.logger.info(f"Divergence Confirmed: {signal.divergence_confirmed}", self.symbol)
+
         # Check if we can open new position
+        # Allows up to 2 positions of same type if all confirmations are met
         can_open, reason = self.risk_manager.can_open_new_position(
-            config.advanced.magic_number
+            magic_number=config.advanced.magic_number,
+            symbol=self.symbol,
+            position_type=signal.signal_type,
+            all_confirmations_met=signal.all_confirmations_met
         )
-        
+
         if not can_open:
             self.logger.warning(f"Cannot open position: {reason}", self.symbol)
             return
@@ -189,20 +203,20 @@ class SymbolStrategy:
             self.logger.error("Invalid lot size calculated", self.symbol)
             return
         
-        # Update signal with lot size
-        signal.lot_size = lot_size
-        
-        # Validate trade risk
-        is_valid, error = self.risk_manager.validate_trade_risk(
+        # Validate trade risk (may adjust lot size if risk is too high)
+        is_valid, error, adjusted_lot_size = self.risk_manager.validate_trade_risk(
             symbol=self.symbol,
             lot_size=lot_size,
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss
         )
-        
+
         if not is_valid:
             self.logger.error(f"Trade validation failed: {error}", self.symbol)
             return
+
+        # Use the adjusted lot size (may be same as original or reduced)
+        signal.lot_size = adjusted_lot_size
         
         # Execute the order
         ticket = self.order_manager.execute_signal(signal)

@@ -84,6 +84,11 @@ class OrderManager:
         """
         symbol = signal.symbol
 
+        # Check if AutoTrading is enabled in terminal
+        if not self.connector.is_autotrading_enabled():
+            self.logger.error(f"AutoTrading is DISABLED in MT5 terminal - Trade rejected", symbol)
+            return None
+
         # Check if trading is enabled for this symbol
         if not self.connector.is_trading_enabled(symbol):
             self.logger.warning(f"Trading is disabled for {symbol} - Trade rejected", symbol)

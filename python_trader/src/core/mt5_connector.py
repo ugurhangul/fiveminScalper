@@ -190,6 +190,9 @@ class MT5Connector:
                 'stops_level': info.trade_stops_level,
                 'freeze_level': info.trade_freeze_level,
                 'trade_mode': info.trade_mode,
+                'currency_base': info.currency_base,
+                'currency_profit': info.currency_profit,
+                'currency_margin': info.currency_margin,
             }
             
             # Cache it
@@ -225,10 +228,65 @@ class MT5Connector:
         """Get current account equity"""
         if not self.is_connected:
             return 0.0
-        
+
         account_info = mt5.account_info()
         return account_info.equity if account_info else 0.0
-    
+
+    def get_account_currency(self) -> str:
+        """Get account currency"""
+        if not self.is_connected:
+            return ""
+
+        account_info = mt5.account_info()
+        return account_info.currency if account_info else ""
+
+    def get_currency_conversion_rate(self, from_currency: str, to_currency: str) -> Optional[float]:
+        """
+        Get conversion rate from one currency to another.
+
+        Args:
+            from_currency: Source currency (e.g., 'THB')
+            to_currency: Target currency (e.g., 'USD')
+
+        Returns:
+            Conversion rate or None if not available
+        """
+        if from_currency == to_currency:
+            return 1.0
+
+        # Try direct pair: FROMTO (e.g., THBUSD)
+        direct_pair = f"{from_currency}{to_currency}"
+        tick = mt5.symbol_info_tick(direct_pair)
+        if tick is not None:
+            # Use bid price for conversion
+            return tick.bid
+
+        # Try inverse pair: TOFROM (e.g., USDTHB)
+        inverse_pair = f"{to_currency}{from_currency}"
+        tick = mt5.symbol_info_tick(inverse_pair)
+        if tick is not None:
+            # Use inverse of ask price for conversion
+            return 1.0 / tick.ask if tick.ask > 0 else None
+
+        # Try with common separators
+        for separator in ['/', '.', '_', '']:
+            if separator:
+                direct_pair_sep = f"{from_currency}{separator}{to_currency}"
+                tick = mt5.symbol_info_tick(direct_pair_sep)
+                if tick is not None:
+                    return tick.bid
+
+                inverse_pair_sep = f"{to_currency}{separator}{from_currency}"
+                tick = mt5.symbol_info_tick(inverse_pair_sep)
+                if tick is not None:
+                    return 1.0 / tick.ask if tick.ask > 0 else None
+
+        self.logger.warning(
+            f"Could not find conversion rate for {from_currency} to {to_currency}. "
+            f"Tried: {direct_pair}, {inverse_pair}"
+        )
+        return None
+
     def get_positions(self, symbol: Optional[str] = None, magic_number: Optional[int] = None) -> List[PositionInfo]:
         """
         Get open positions.
@@ -362,6 +420,29 @@ class MT5Connector:
         except Exception as e:
             self.logger.error(f"Error getting spread percent for {symbol}: {e}")
             return None
+
+    def is_autotrading_enabled(self) -> bool:
+        """
+        Check if AutoTrading is enabled in MT5 terminal.
+
+        Returns:
+            True if AutoTrading is enabled, False otherwise
+        """
+        try:
+            if not self.is_connected:
+                return False
+
+            terminal_info = mt5.terminal_info()
+            if terminal_info is None:
+                self.logger.error("Failed to get terminal info")
+                return False
+
+            # Check if trade is allowed in terminal
+            return terminal_info.trade_allowed
+
+        except Exception as e:
+            self.logger.error(f"Error checking AutoTrading status: {e}")
+            return False
 
     def is_trading_enabled(self, symbol: str) -> bool:
         """

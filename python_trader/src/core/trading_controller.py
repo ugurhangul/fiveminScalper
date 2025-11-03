@@ -103,14 +103,22 @@ class TradingController:
         if not self.strategies:
             self.logger.error("No strategies initialized")
             return
-        
+
+        # Check if AutoTrading is enabled before starting
+        if not self.connector.is_autotrading_enabled():
+            self.logger.error("=" * 60)
+            self.logger.error("AutoTrading is DISABLED in MT5 terminal")
+            self.logger.error("Please enable AutoTrading and restart the bot")
+            self.logger.error("=" * 60)
+            return
+
         self.running = True
-        
+
         self.logger.info("=" * 60)
         self.logger.info("Starting Multi-Symbol Trading")
         self.logger.info(f"Active symbols: {len(self.strategies)}")
         self.logger.info("=" * 60)
-        
+
         # Start a thread for each symbol
         for symbol, strategy in self.strategies.items():
             thread = threading.Thread(
@@ -122,7 +130,7 @@ class TradingController:
             thread.start()
             self.threads[symbol] = thread
             self.logger.info(f"Started thread for {symbol}", symbol)
-        
+
         # Start position monitoring thread
         monitor_thread = threading.Thread(
             target=self._position_monitor,
@@ -131,7 +139,7 @@ class TradingController:
         )
         monitor_thread.start()
         self.logger.info("Started position monitor thread")
-        
+
         self.logger.info("=" * 60)
         self.logger.info("All threads started successfully")
         self.logger.info("=" * 60)
@@ -139,25 +147,31 @@ class TradingController:
     def _symbol_worker(self, symbol: str, strategy: SymbolStrategy):
         """
         Worker thread for a single symbol.
-        
+
         Args:
             symbol: Symbol name
             strategy: Symbol strategy instance
         """
         self.logger.info(f"Worker thread started for {symbol}", symbol)
-        
+
         while self.running:
             try:
+                # Check if AutoTrading is still enabled
+                if not self.connector.is_autotrading_enabled():
+                    self.logger.error(f"AutoTrading DISABLED - Stopping worker thread", symbol)
+                    self.running = False
+                    break
+
                 # Process tick
                 strategy.on_tick()
-                
+
                 # Sleep for 1 second
                 time.sleep(1)
-                
+
             except Exception as e:
                 self.logger.error(f"Error in worker thread: {e}", symbol)
                 time.sleep(5)  # Wait before retrying
-        
+
         self.logger.info(f"Worker thread stopped for {symbol}", symbol)
     
     def _position_monitor(self):
@@ -172,6 +186,12 @@ class TradingController:
 
         while self.running:
             try:
+                # Check if AutoTrading is still enabled
+                if not self.connector.is_autotrading_enabled():
+                    self.logger.error("AutoTrading DISABLED - Stopping position monitor")
+                    self.running = False
+                    break
+
                 # Get all positions
                 positions = self.connector.get_positions(
                     magic_number=config.advanced.magic_number
