@@ -49,6 +49,9 @@ class SymbolParameters:
     adaptive_loss_trigger: int = 3
     adaptive_win_recovery: int = 2
 
+    # Spread limit (as percentage of price, e.g., 0.1 = 0.1%)
+    max_spread_percent: float = 0.1
+
 
 @dataclass
 class SymbolStats:
@@ -235,15 +238,16 @@ class TradeSignal:
     lot_size: float
     timestamp: datetime
     reason: str = ""
-    
+    max_spread_percent: float = 0.1  # Maximum allowed spread as percentage of price (e.g., 0.1 = 0.1%)
+
     @property
     def risk(self) -> float:
         return abs(self.entry_price - self.stop_loss)
-    
+
     @property
     def reward(self) -> float:
         return abs(self.take_profit - self.entry_price)
-    
+
     @property
     def risk_reward_ratio(self) -> float:
         if self.risk == 0:

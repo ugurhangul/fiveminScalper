@@ -189,6 +189,7 @@ class MT5Connector:
                 'filling_mode': info.filling_mode,
                 'stops_level': info.trade_stops_level,
                 'freeze_level': info.trade_freeze_level,
+                'trade_mode': info.trade_mode,
             }
             
             # Cache it
@@ -301,6 +302,96 @@ class MT5Connector:
         except Exception as e:
             self.logger.error(f"Error getting price for {symbol}: {e}")
             return None
+
+    def get_spread(self, symbol: str) -> Optional[float]:
+        """
+        Get current spread for symbol in points.
+
+        Args:
+            symbol: Symbol name
+
+        Returns:
+            Spread in points or None
+        """
+        try:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return None
+
+            symbol_info = self.get_symbol_info(symbol)
+            if symbol_info is None:
+                return None
+
+            # Calculate spread in points
+            point = symbol_info['point']
+            spread_price = tick.ask - tick.bid
+            spread_points = spread_price / point if point > 0 else 0
+
+            return spread_points
+
+        except Exception as e:
+            self.logger.error(f"Error getting spread for {symbol}: {e}")
+            return None
+
+    def get_spread_percent(self, symbol: str) -> Optional[float]:
+        """
+        Get current spread as percentage of price.
+
+        Args:
+            symbol: Symbol name
+
+        Returns:
+            Spread as percentage (e.g., 0.05 = 0.05%) or None
+        """
+        try:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return None
+
+            # Calculate spread as percentage of mid price
+            spread_price = tick.ask - tick.bid
+            mid_price = (tick.ask + tick.bid) / 2
+
+            if mid_price == 0:
+                return None
+
+            spread_percent = (spread_price / mid_price) * 100
+
+            return spread_percent
+
+        except Exception as e:
+            self.logger.error(f"Error getting spread percent for {symbol}: {e}")
+            return None
+
+    def is_trading_enabled(self, symbol: str) -> bool:
+        """
+        Check if trading is enabled for a symbol.
+
+        Args:
+            symbol: Symbol name
+
+        Returns:
+            True if trading is enabled, False otherwise
+        """
+        try:
+            symbol_info = self.get_symbol_info(symbol)
+            if symbol_info is None:
+                return False
+
+            # trade_mode values:
+            # 0 = SYMBOL_TRADE_MODE_DISABLED - trading disabled
+            # 1 = SYMBOL_TRADE_MODE_LONGONLY - only long positions allowed
+            # 2 = SYMBOL_TRADE_MODE_SHORTONLY - only short positions allowed
+            # 3 = SYMBOL_TRADE_MODE_CLOSEONLY - only position closing allowed
+            # 4 = SYMBOL_TRADE_MODE_FULL - no restrictions
+            trade_mode = symbol_info.get('trade_mode', 0)
+
+            # Trading is enabled if mode is not DISABLED (0)
+            return trade_mode != 0
+
+        except Exception as e:
+            self.logger.error(f"Error checking if trading enabled for {symbol}: {e}")
+            return False
 
     def get_market_watch_symbols(self) -> List[str]:
         """

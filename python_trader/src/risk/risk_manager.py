@@ -84,10 +84,12 @@ class RiskManager:
         
         # Apply min/max constraints
         lot_size = max(min_lot, min(max_lot, lot_size))
-        
+
         # Apply user-defined min/max
-        if self.risk_config.min_lot_size > 0:
-            lot_size = max(self.risk_config.min_lot_size, lot_size)
+        # Note: If min_lot_size is 0 or negative, use symbol's min_lot
+        user_min_lot = self.risk_config.min_lot_size if self.risk_config.min_lot_size > 0 else min_lot
+        lot_size = max(user_min_lot, lot_size)
+
         if self.risk_config.max_lot_size > 0:
             lot_size = min(self.risk_config.max_lot_size, lot_size)
         
@@ -101,7 +103,11 @@ class RiskManager:
         self.logger.info(f"SL Distance: {sl_distance:.5f} ({sl_distance_in_points:.1f} points)", symbol)
         self.logger.info(f"Tick Value: ${tick_value:.2f}", symbol)
         self.logger.info(f"Calculated Lot Size: {lot_size:.2f}", symbol)
-        self.logger.info(f"Min/Max Lot: {min_lot:.2f} / {max_lot:.2f}", symbol)
+        self.logger.info(f"Symbol Min/Max Lot: {min_lot:.2f} / {max_lot:.2f}", symbol)
+        if self.risk_config.min_lot_size > 0:
+            self.logger.info(f"User Min Lot: {self.risk_config.min_lot_size:.2f}", symbol)
+        else:
+            self.logger.info(f"User Min Lot: MIN (using symbol minimum)", symbol)
         self.logger.separator()
         
         return lot_size

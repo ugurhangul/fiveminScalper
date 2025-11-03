@@ -75,15 +75,43 @@ class OrderManager:
     def execute_signal(self, signal: TradeSignal) -> Optional[int]:
         """
         Execute a trade signal.
-        
+
         Args:
             signal: TradeSignal object
-            
+
         Returns:
             Ticket number if successful, None otherwise
         """
         symbol = signal.symbol
-        
+
+        # Check if trading is enabled for this symbol
+        if not self.connector.is_trading_enabled(symbol):
+            self.logger.warning(f"Trading is disabled for {symbol} - Trade rejected", symbol)
+            return None
+
+        # Check spread before executing (as percentage of price)
+        current_spread_percent = self.connector.get_spread_percent(symbol)
+        if current_spread_percent is None:
+            self.logger.error(f"Failed to get spread for {symbol}", symbol)
+            return None
+
+        # Also get spread in points for logging
+        current_spread_points = self.connector.get_spread(symbol)
+
+        if current_spread_percent > signal.max_spread_percent:
+            self.logger.warning(
+                f"Spread too high: {current_spread_percent:.3f}% ({current_spread_points:.1f} points) "
+                f"(max: {signal.max_spread_percent:.3f}%) - Trade rejected",
+                symbol
+            )
+            return None
+
+        self.logger.debug(
+            f"Spread check passed: {current_spread_percent:.3f}% ({current_spread_points:.1f} points) "
+            f"(max: {signal.max_spread_percent:.3f}%)",
+            symbol
+        )
+
         # Normalize prices and volume
         sl = self.normalize_price(symbol, signal.stop_loss)
         volume = self.normalize_volume(symbol, signal.lot_size)

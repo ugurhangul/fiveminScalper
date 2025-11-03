@@ -206,12 +206,9 @@ class SymbolStrategy:
         
         # Execute the order
         ticket = self.order_manager.execute_signal(signal)
-        
+
         if ticket:
             self.logger.info(f"Trade executed successfully! Ticket: {ticket}", self.symbol)
-            
-            # Reset 4H candle after successful trade
-            self.candle_processor.reset_4h_candle()
         else:
             self.logger.error("Failed to execute trade", self.symbol)
     

@@ -421,17 +421,34 @@ class StrategyEngine:
             self.logger.warning("No valid lowest low found for BUY signal", self.symbol)
             lowest_low = candle_4h.low  # Fallback to 4H low
 
-        # Entry: Current 5M close (or slightly above 4H low)
-        # Divide by 100 to convert percent to decimal (matches MQL5)
-        entry_offset = candle_4h.low * (self.strategy_config.entry_offset_percent / 100.0)
-        entry_price = max(candle_5m.close, candle_4h.low + entry_offset)
+        # Entry: Will use current ASK price at execution (matches MQL5)
+        # For signal generation, use current 5M close as reference
+        entry_price = candle_5m.close
 
         # Stop Loss: Below the LOWEST LOW (not 4H low!)
         # Use point-based or percentage-based calculation
         sl_offset = self._calculate_sl_offset(lowest_low)
-        stop_loss = lowest_low - sl_offset
+
+        # Add spread to SL to account for bid-ask spread
+        # For BUY: Entry at ASK, SL triggered when BID hits SL
+        # So we need to widen SL by spread amount
+        spread_price = 0.0
+        if self.connector is not None:
+            symbol_info = self.connector.get_symbol_info(self.symbol)
+            if symbol_info is not None:
+                spread_points = self.connector.get_spread(self.symbol)
+                if spread_points is not None:
+                    point = symbol_info['point']
+                    spread_price = spread_points * point
+                    self.logger.debug(
+                        f"Adding spread to BUY SL: {spread_points:.1f} points = {spread_price:.5f}",
+                        self.symbol
+                    )
+
+        stop_loss = lowest_low - sl_offset - spread_price
 
         # Take Profit: Based on R:R ratio
+        # Note: TP will be recalculated in order_manager using actual execution price
         risk = entry_price - stop_loss
         reward = risk * self.strategy_config.risk_reward_ratio
         take_profit = entry_price + reward
@@ -444,18 +461,22 @@ class StrategyEngine:
             take_profit=take_profit,
             lot_size=0.0,  # Will be calculated by risk manager
             timestamp=candle_5m.time,
-            reason="False breakout below 4H low with reversal"
+            reason="False breakout below 4H low with reversal",
+            max_spread_percent=self.symbol_params.max_spread_percent
         )
 
         self.logger.info("=" * 60, self.symbol)
         self.logger.info("*** BUY SIGNAL GENERATED ***", self.symbol)
         self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
         self.logger.info(f"Lowest Low in Pattern: {lowest_low:.5f}", self.symbol)
-        self.logger.info(f"Entry: {entry_price:.5f}", self.symbol)
-        self.logger.info(f"Stop Loss: {stop_loss:.5f}", self.symbol)
-        self.logger.info(f"Take Profit: {take_profit:.5f}", self.symbol)
-        self.logger.info(f"Risk: {risk:.5f}", self.symbol)
-        self.logger.info(f"Reward: {reward:.5f}", self.symbol)
+        self.logger.info(f"SL Offset: {sl_offset:.5f}", self.symbol)
+        if spread_price > 0:
+            self.logger.info(f"Spread Adjustment: {spread_price:.5f}", self.symbol)
+        self.logger.info(f"Entry (reference): {entry_price:.5f} (actual entry will be current ASK)", self.symbol)
+        self.logger.info(f"Stop Loss: {stop_loss:.5f} (includes spread adjustment)", self.symbol)
+        self.logger.info(f"Take Profit (reference): {take_profit:.5f} (will be recalculated at execution)", self.symbol)
+        self.logger.info(f"Risk (estimated): {risk:.5f}", self.symbol)
+        self.logger.info(f"Reward (estimated): {reward:.5f}", self.symbol)
         self.logger.info(f"R:R Ratio: 1:{self.strategy_config.risk_reward_ratio}", self.symbol)
         self.logger.info("=" * 60, self.symbol)
 
@@ -481,17 +502,34 @@ class StrategyEngine:
             self.logger.warning("No valid highest high found for SELL signal", self.symbol)
             highest_high = candle_4h.high  # Fallback to 4H high
 
-        # Entry: Current 5M close (or slightly below 4H high)
-        # Divide by 100 to convert percent to decimal (matches MQL5)
-        entry_offset = candle_4h.high * (self.strategy_config.entry_offset_percent / 100.0)
-        entry_price = min(candle_5m.close, candle_4h.high - entry_offset)
+        # Entry: Will use current BID price at execution (matches MQL5)
+        # For signal generation, use current 5M close as reference
+        entry_price = candle_5m.close
 
         # Stop Loss: Above the HIGHEST HIGH (not 4H high!)
         # Use point-based or percentage-based calculation
         sl_offset = self._calculate_sl_offset(highest_high)
-        stop_loss = highest_high + sl_offset
+
+        # Add spread to SL to account for bid-ask spread
+        # For SELL: Entry at BID, SL triggered when ASK hits SL
+        # So we need to widen SL by spread amount
+        spread_price = 0.0
+        if self.connector is not None:
+            symbol_info = self.connector.get_symbol_info(self.symbol)
+            if symbol_info is not None:
+                spread_points = self.connector.get_spread(self.symbol)
+                if spread_points is not None:
+                    point = symbol_info['point']
+                    spread_price = spread_points * point
+                    self.logger.debug(
+                        f"Adding spread to SELL SL: {spread_points:.1f} points = {spread_price:.5f}",
+                        self.symbol
+                    )
+
+        stop_loss = highest_high + sl_offset + spread_price
 
         # Take Profit: Based on R:R ratio
+        # Note: TP will be recalculated in order_manager using actual execution price
         risk = stop_loss - entry_price
         reward = risk * self.strategy_config.risk_reward_ratio
         take_profit = entry_price - reward
@@ -504,18 +542,22 @@ class StrategyEngine:
             take_profit=take_profit,
             lot_size=0.0,  # Will be calculated by risk manager
             timestamp=candle_5m.time,
-            reason="False breakout above 4H high with reversal"
+            reason="False breakout above 4H high with reversal",
+            max_spread_percent=self.symbol_params.max_spread_percent
         )
 
         self.logger.info("=" * 60, self.symbol)
         self.logger.info("*** SELL SIGNAL GENERATED ***", self.symbol)
         self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
         self.logger.info(f"Highest High in Pattern: {highest_high:.5f}", self.symbol)
-        self.logger.info(f"Entry: {entry_price:.5f}", self.symbol)
-        self.logger.info(f"Stop Loss: {stop_loss:.5f}", self.symbol)
-        self.logger.info(f"Take Profit: {take_profit:.5f}", self.symbol)
-        self.logger.info(f"Risk: {risk:.5f}", self.symbol)
-        self.logger.info(f"Reward: {reward:.5f}", self.symbol)
+        self.logger.info(f"SL Offset: {sl_offset:.5f}", self.symbol)
+        if spread_price > 0:
+            self.logger.info(f"Spread Adjustment: {spread_price:.5f}", self.symbol)
+        self.logger.info(f"Entry (reference): {entry_price:.5f} (actual entry will be current BID)", self.symbol)
+        self.logger.info(f"Stop Loss: {stop_loss:.5f} (includes spread adjustment)", self.symbol)
+        self.logger.info(f"Take Profit (reference): {take_profit:.5f} (will be recalculated at execution)", self.symbol)
+        self.logger.info(f"Risk (estimated): {risk:.5f}", self.symbol)
+        self.logger.info(f"Reward (estimated): {reward:.5f}", self.symbol)
         self.logger.info(f"R:R Ratio: 1:{self.strategy_config.risk_reward_ratio}", self.symbol)
         self.logger.info("=" * 60, self.symbol)
 

@@ -80,15 +80,15 @@ This report provides a comprehensive comparison between the MQL5 Expert Advisor 
 
 | Aspect | EA (MQL5) | Python | Status |
 |--------|-----------|--------|--------|
-| **BUY Entry** | Current Ask price | `max(candle_5m.close, candle_4h.low + entry_offset)` | ⚠️ DIFFERENCE |
-| **SELL Entry** | Current Bid price | `min(candle_5m.close, candle_4h.high - entry_offset)` | ⚠️ DIFFERENCE |
-| **Entry Offset** | Not applied to entry | Applied to entry | ⚠️ DIFFERENCE |
+| **BUY Entry** | Current Ask price | Current Ask price | ✅ MATCH |
+| **SELL Entry** | Current Bid price | Current Bid price | ✅ MATCH |
+| **Entry Offset** | Not applied to entry | Not applied to entry | ✅ MATCH |
 
 **Code References:**
 - **EA:** `FMS_TradeExecution.mqh` lines 109, 194
-- **Python:** `strategy_engine.py` lines 379-380, 439-440
+- **Python:** `order_manager.py` lines 92-97
 
-**Analysis:** The Python version applies an entry offset to ensure entry is slightly above/below the 4H level, while the EA uses the current market price directly. This is a **minor enhancement** in Python that provides better entry positioning.
+**Analysis:** Both implementations use market orders at the current ASK (for BUY) or BID (for SELL) price. The entry_offset configuration is not applied to the actual execution price - it's only used for signal validation logic. The Python strategy_engine.py uses 5M close as a reference for calculating estimated risk/reward, but the actual execution always uses current market price.
 
 ---
 

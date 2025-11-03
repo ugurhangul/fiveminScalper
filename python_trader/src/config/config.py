@@ -141,10 +141,14 @@ class TradingConfig:
         )
         
         # Risk management
+        # Parse MIN_LOT_SIZE: if "MIN", use 0 to signal using symbol's minimum
+        min_lot_str = os.getenv('MIN_LOT_SIZE', '0.01').strip().upper()
+        min_lot_value = 0.0 if min_lot_str == 'MIN' else float(min_lot_str)
+
         self.risk = RiskConfig(
             risk_percent_per_trade=float(os.getenv('RISK_PERCENT_PER_TRADE', '1.0')),
             max_lot_size=float(os.getenv('MAX_LOT_SIZE', '0.01')),
-            min_lot_size=float(os.getenv('MIN_LOT_SIZE', '0.01')),
+            min_lot_size=min_lot_value,
             max_positions=int(os.getenv('MAX_POSITIONS', '1000'))
         )
         
