@@ -49,8 +49,12 @@ class SymbolOptimizer:
     # Optimized parameters for each category
     CATEGORY_PARAMETERS = {
         SymbolCategory.MAJOR_FOREX: SymbolParameters(
+            enable_false_breakout_strategy=True,
+            enable_true_breakout_strategy=True,
             breakout_volume_max=0.8,
             reversal_volume_min=1.8,
+            true_breakout_volume_min=2.0,
+            continuation_volume_min=1.5,
             volume_average_period=20,
             rsi_period=14,
             macd_fast=12,
@@ -62,8 +66,12 @@ class SymbolOptimizer:
             max_spread_percent=0.05  # Major pairs: 0.05% (tight spreads)
         ),
         SymbolCategory.MINOR_FOREX: SymbolParameters(
+            enable_false_breakout_strategy=True,
+            enable_true_breakout_strategy=True,
             breakout_volume_max=0.7,
             reversal_volume_min=2.0,
+            true_breakout_volume_min=2.2,
+            continuation_volume_min=1.6,
             volume_average_period=25,
             rsi_period=14,
             macd_fast=12,
@@ -75,8 +83,12 @@ class SymbolOptimizer:
             max_spread_percent=0.2  # Minor pairs: 0.2% (moderate spreads)
         ),
         SymbolCategory.EXOTIC_FOREX: SymbolParameters(
+            enable_false_breakout_strategy=True,
+            enable_true_breakout_strategy=True,
             breakout_volume_max=0.6,
             reversal_volume_min=2.5,
+            true_breakout_volume_min=2.8,
+            continuation_volume_min=2.0,
             volume_average_period=30,
             rsi_period=21,
             macd_fast=16,
@@ -85,11 +97,15 @@ class SymbolOptimizer:
             divergence_lookback=30,
             adaptive_loss_trigger=1,
             adaptive_win_recovery=3,
-            max_spread_percent=0.05 
+            max_spread_percent=0.05
         ),
         SymbolCategory.METALS: SymbolParameters(
+            enable_false_breakout_strategy=True,
+            enable_true_breakout_strategy=True,
             breakout_volume_max=0.7,
             reversal_volume_min=2.2,
+            true_breakout_volume_min=2.5,
+            continuation_volume_min=1.8,
             volume_average_period=25,
             rsi_period=14,
             macd_fast=12,
@@ -101,8 +117,12 @@ class SymbolOptimizer:
             max_spread_percent=0.1  # Metals: 0.1%
         ),
         SymbolCategory.INDICES: SymbolParameters(
+            enable_false_breakout_strategy=True,
+            enable_true_breakout_strategy=True,
             breakout_volume_max=0.8,
             reversal_volume_min=1.8,
+            true_breakout_volume_min=2.0,
+            continuation_volume_min=1.5,
             volume_average_period=20,
             rsi_period=14,
             macd_fast=12,
@@ -114,8 +134,12 @@ class SymbolOptimizer:
             max_spread_percent=0.1  # Indices: 0.1%
         ),
         SymbolCategory.CRYPTO: SymbolParameters(
+            enable_false_breakout_strategy=True,
+            enable_true_breakout_strategy=True,
             breakout_volume_max=0.5,
             reversal_volume_min=3.0,
+            true_breakout_volume_min=3.5,
+            continuation_volume_min=2.5,
             volume_average_period=40,
             rsi_period=21,
             macd_fast=16,
@@ -127,8 +151,12 @@ class SymbolOptimizer:
             max_spread_percent=0.5  # Crypto: 0.5% (very wide spreads acceptable)
         ),
         SymbolCategory.COMMODITIES: SymbolParameters(
+            enable_false_breakout_strategy=True,
+            enable_true_breakout_strategy=True,
             breakout_volume_max=0.7,
             reversal_volume_min=2.0,
+            true_breakout_volume_min=2.2,
+            continuation_volume_min=1.6,
             volume_average_period=25,
             rsi_period=14,
             macd_fast=12,

@@ -85,25 +85,52 @@ class AdaptiveFilter:
             self.logger.info("=" * 60, self.symbol)
     
     def _disable_filters(self):
-        """Disable volume and divergence filters"""
-        if self.state.volume_confirmation_active or self.state.divergence_confirmation_active:
-            self.state.volume_confirmation_active = False
-            self.state.divergence_confirmation_active = False
-            
-            # Update symbol parameters
-            self.symbol_params.volume_confirmation_enabled = False
-            self.symbol_params.divergence_confirmation_enabled = False
-            
-            self.logger.info("=" * 60, self.symbol)
-            self.logger.info("*** ADAPTIVE FILTERS DISABLED ***", self.symbol)
-            self.logger.info(
-                f"Triggered by {self.state.consecutive_wins} consecutive wins",
-                self.symbol
-            )
-            self.logger.info("Volume confirmation: DISABLED", self.symbol)
-            self.logger.info("Divergence confirmation: DISABLED", self.symbol)
-            self.logger.info("Strategy is performing well, filters not needed", self.symbol)
-            self.logger.info("=" * 60, self.symbol)
+        """Disable volume and divergence filters
+
+        NOTE: With dual strategy system (false + true breakout), volume confirmation
+        should NOT be disabled as it's critical for strategy selection.
+        Only divergence can be safely disabled.
+        """
+        # Check if both strategies are enabled (dual strategy mode)
+        dual_strategy_mode = (self.symbol_params.enable_false_breakout_strategy and
+                             self.symbol_params.enable_true_breakout_strategy)
+
+        if dual_strategy_mode:
+            # In dual strategy mode, NEVER disable volume confirmation
+            # Only disable divergence confirmation
+            if self.state.divergence_confirmation_active:
+                self.state.divergence_confirmation_active = False
+                self.symbol_params.divergence_confirmation_enabled = False
+
+                self.logger.info("=" * 60, self.symbol)
+                self.logger.info("*** ADAPTIVE FILTER: DIVERGENCE DISABLED ***", self.symbol)
+                self.logger.info(
+                    f"Triggered by {self.state.consecutive_wins} consecutive wins",
+                    self.symbol
+                )
+                self.logger.info("Volume confirmation: ENABLED (required for dual strategy)", self.symbol)
+                self.logger.info("Divergence confirmation: DISABLED", self.symbol)
+                self.logger.info("=" * 60, self.symbol)
+        else:
+            # Single strategy mode - can disable both filters
+            if self.state.volume_confirmation_active or self.state.divergence_confirmation_active:
+                self.state.volume_confirmation_active = False
+                self.state.divergence_confirmation_active = False
+
+                # Update symbol parameters
+                self.symbol_params.volume_confirmation_enabled = False
+                self.symbol_params.divergence_confirmation_enabled = False
+
+                self.logger.info("=" * 60, self.symbol)
+                self.logger.info("*** ADAPTIVE FILTERS DISABLED ***", self.symbol)
+                self.logger.info(
+                    f"Triggered by {self.state.consecutive_wins} consecutive wins",
+                    self.symbol
+                )
+                self.logger.info("Volume confirmation: DISABLED", self.symbol)
+                self.logger.info("Divergence confirmation: DISABLED", self.symbol)
+                self.logger.info("Strategy is performing well, filters not needed", self.symbol)
+                self.logger.info("=" * 60, self.symbol)
     
     def get_filter_status(self) -> dict:
         """

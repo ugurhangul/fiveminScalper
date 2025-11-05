@@ -70,11 +70,16 @@ class LoggingConfig:
 
 @dataclass
 class AdaptiveFilterConfig:
-    """Adaptive filter system settings"""
-    use_adaptive_filters: bool = True
+    """Adaptive filter system settings
+
+    NOTE: With dual strategy system (false + true breakout), volume confirmation
+    is CRITICAL for strategy selection and should always remain enabled.
+    Adaptive filters are disabled by default.
+    """
+    use_adaptive_filters: bool = False  # Disabled - confirmations required for dual strategy
     adaptive_loss_trigger: int = 3
     adaptive_win_recovery: int = 2
-    start_with_filters_enabled: bool = False
+    start_with_filters_enabled: bool = True  # Always start with filters enabled
 
 
 @dataclass
@@ -145,9 +150,9 @@ class TradingConfig:
         min_lot_str = os.getenv('MIN_LOT_SIZE', '0.01').strip().upper()
         min_lot_value = 0.0 if min_lot_str == 'MIN' else float(min_lot_str)
 
-        # Parse MAX_LOT_SIZE
-        max_lot_str = os.getenv('MAX_LOT_SIZE', '0.01')
-        max_lot_value = float(max_lot_str)
+        # Parse MAX_LOT_SIZE: if "MIN", use 0 to signal using symbol's minimum
+        max_lot_str = os.getenv('MAX_LOT_SIZE', '0.01').strip().upper()
+        max_lot_value = 0.0 if max_lot_str == 'MIN' else float(max_lot_str)
 
         self.risk = RiskConfig(
             risk_percent_per_trade=float(os.getenv('RISK_PERCENT_PER_TRADE', '1.0')),
@@ -189,11 +194,12 @@ class TradingConfig:
         )
         
         # Adaptive filters
+        # NOTE: Defaults changed for dual strategy system - confirmations must stay enabled
         self.adaptive_filters = AdaptiveFilterConfig(
-            use_adaptive_filters=os.getenv('USE_ADAPTIVE_FILTERS', 'true').lower() == 'true',
-            adaptive_loss_trigger=int(os.getenv('ADAPTIVE_LOSS_TRIGGER', '1')),
-            adaptive_win_recovery=int(os.getenv('ADAPTIVE_WIN_RECOVERY', '3')),
-            start_with_filters_enabled=os.getenv('START_WITH_FILTERS_ENABLED', 'false').lower() == 'true'
+            use_adaptive_filters=os.getenv('USE_ADAPTIVE_FILTERS', 'false').lower() == 'true',  # Changed default to 'false'
+            adaptive_loss_trigger=int(os.getenv('ADAPTIVE_LOSS_TRIGGER', '3')),
+            adaptive_win_recovery=int(os.getenv('ADAPTIVE_WIN_RECOVERY', '2')),
+            start_with_filters_enabled=os.getenv('START_WITH_FILTERS_ENABLED', 'true').lower() == 'true'  # Changed default to 'true'
         )
         
         # Symbol adaptation

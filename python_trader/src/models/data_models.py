@@ -29,14 +29,24 @@ class PositionType(Enum):
 @dataclass
 class SymbolParameters:
     """Symbol-specific parameter set"""
-    # Confirmation flags
-    volume_confirmation_enabled: bool = True
-    divergence_confirmation_enabled: bool = True
+    # Strategy selection
+    enable_false_breakout_strategy: bool = True  # Trade reversals (weak breakouts)
+    enable_true_breakout_strategy: bool = True   # Trade continuations (strong breakouts)
 
-    # Volume parameters
-    breakout_volume_max: float = 1.0
-    reversal_volume_min: float = 1.5
+    # Confirmation flags
+    # CRITICAL: Volume confirmation MUST be enabled for dual strategy system
+    # It determines which strategy to use: LOW volume = false breakout, HIGH volume = true breakout
+    volume_confirmation_enabled: bool = True
+    divergence_confirmation_enabled: bool = True  # Used for false breakout strategy only
+
+    # False breakout volume parameters
+    breakout_volume_max: float = 1.0  # Max volume for weak breakout (false breakout)
+    reversal_volume_min: float = 1.5  # Min volume for strong reversal (false breakout)
     volume_average_period: int = 20
+
+    # True breakout volume parameters
+    true_breakout_volume_min: float = 2.0  # Min volume for strong breakout (true breakout)
+    continuation_volume_min: float = 1.5   # Min volume for continuation confirmation (true breakout)
 
     # Divergence parameters
     rsi_period: int = 14
@@ -147,7 +157,7 @@ class CandleData:
 @dataclass
 class BreakoutState:
     """Tracks breakout and reversal state for a symbol"""
-    # BUY signal tracking
+    # FALSE BREAKOUT - BUY signal tracking (reversal strategy)
     buy_breakout_confirmed: bool = False
     buy_reversal_confirmed: bool = False
     buy_breakout_candle_time: Optional[datetime] = None
@@ -156,8 +166,8 @@ class BreakoutState:
     buy_breakout_volume_ok: bool = False
     buy_reversal_volume_ok: bool = False
     buy_divergence_ok: bool = False
-    
-    # SELL signal tracking
+
+    # FALSE BREAKOUT - SELL signal tracking (reversal strategy)
     sell_breakout_confirmed: bool = False
     sell_reversal_confirmed: bool = False
     sell_breakout_candle_time: Optional[datetime] = None
@@ -166,9 +176,27 @@ class BreakoutState:
     sell_breakout_volume_ok: bool = False
     sell_reversal_volume_ok: bool = False
     sell_divergence_ok: bool = False
-    
+
+    # TRUE BREAKOUT - BUY signal tracking (continuation strategy)
+    true_buy_breakout_confirmed: bool = False
+    true_buy_continuation_confirmed: bool = False
+    true_buy_breakout_candle_time: Optional[datetime] = None
+    true_buy_breakout_volume: int = 0
+    true_buy_continuation_volume: int = 0
+    true_buy_breakout_volume_ok: bool = False
+    true_buy_continuation_volume_ok: bool = False
+
+    # TRUE BREAKOUT - SELL signal tracking (continuation strategy)
+    true_sell_breakout_confirmed: bool = False
+    true_sell_continuation_confirmed: bool = False
+    true_sell_breakout_candle_time: Optional[datetime] = None
+    true_sell_breakout_volume: int = 0
+    true_sell_continuation_volume: int = 0
+    true_sell_breakout_volume_ok: bool = False
+    true_sell_continuation_volume_ok: bool = False
+
     def reset_buy(self):
-        """Reset BUY signal tracking"""
+        """Reset FALSE BREAKOUT BUY signal tracking"""
         self.buy_breakout_confirmed = False
         self.buy_reversal_confirmed = False
         self.buy_breakout_candle_time = None
@@ -177,9 +205,9 @@ class BreakoutState:
         self.buy_breakout_volume_ok = False
         self.buy_reversal_volume_ok = False
         self.buy_divergence_ok = False
-    
+
     def reset_sell(self):
-        """Reset SELL signal tracking"""
+        """Reset FALSE BREAKOUT SELL signal tracking"""
         self.sell_breakout_confirmed = False
         self.sell_reversal_confirmed = False
         self.sell_breakout_candle_time = None
@@ -188,11 +216,33 @@ class BreakoutState:
         self.sell_breakout_volume_ok = False
         self.sell_reversal_volume_ok = False
         self.sell_divergence_ok = False
-    
+
+    def reset_true_buy(self):
+        """Reset TRUE BREAKOUT BUY signal tracking"""
+        self.true_buy_breakout_confirmed = False
+        self.true_buy_continuation_confirmed = False
+        self.true_buy_breakout_candle_time = None
+        self.true_buy_breakout_volume = 0
+        self.true_buy_continuation_volume = 0
+        self.true_buy_breakout_volume_ok = False
+        self.true_buy_continuation_volume_ok = False
+
+    def reset_true_sell(self):
+        """Reset TRUE BREAKOUT SELL signal tracking"""
+        self.true_sell_breakout_confirmed = False
+        self.true_sell_continuation_confirmed = False
+        self.true_sell_breakout_candle_time = None
+        self.true_sell_breakout_volume = 0
+        self.true_sell_continuation_volume = 0
+        self.true_sell_breakout_volume_ok = False
+        self.true_sell_continuation_volume_ok = False
+
     def reset_all(self):
         """Reset all tracking"""
         self.reset_buy()
         self.reset_sell()
+        self.reset_true_buy()
+        self.reset_true_sell()
 
 
 @dataclass
@@ -240,9 +290,12 @@ class TradeSignal:
     reason: str = ""
     max_spread_percent: float = 0.1  # Maximum allowed spread as percentage of price (e.g., 0.1 = 0.1%)
 
+    # Strategy type
+    is_true_breakout: bool = False  # True = true breakout (continuation), False = false breakout (reversal)
+
     # Confirmation tracking (for allowing second position)
-    volume_confirmed: bool = False  # Both breakout and reversal volume confirmed
-    divergence_confirmed: bool = False  # Divergence confirmed at breakout
+    volume_confirmed: bool = False  # Both breakout and reversal/continuation volume confirmed
+    divergence_confirmed: bool = False  # Divergence confirmed at breakout (false breakout only)
 
     @property
     def risk(self) -> float:
@@ -261,5 +314,10 @@ class TradeSignal:
     @property
     def all_confirmations_met(self) -> bool:
         """Check if all confirmations were met for this signal"""
-        return self.volume_confirmed and self.divergence_confirmed
+        if self.is_true_breakout:
+            # True breakout only requires volume confirmation
+            return self.volume_confirmed
+        else:
+            # False breakout requires both volume and divergence
+            return self.volume_confirmed and self.divergence_confirmed
 

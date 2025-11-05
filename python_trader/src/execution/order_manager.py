@@ -183,6 +183,9 @@ class OrderManager:
         }.get(filling_mode, "UNKNOWN")
         self.logger.debug(f"Using filling mode: {filling_mode_name}", symbol)
 
+        # Generate informative trade comment
+        trade_comment = self._generate_trade_comment(signal)
+
         # Create order request
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -194,7 +197,7 @@ class OrderManager:
             "tp": tp,
             "deviation": self.deviation,
             "magic": self.magic_number,
-            "comment": self.trade_comment,
+            "comment": trade_comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_mode,
         }
@@ -310,6 +313,41 @@ class OrderManager:
                 self.logger.info(f"Corrected TP: {tp:.5f}", symbol)
 
         return sl, tp
+
+    def _generate_trade_comment(self, signal: TradeSignal) -> str:
+        """
+        Generate informative trade comment based on signal details.
+
+        Args:
+            signal: TradeSignal object
+
+        Returns:
+            Formatted comment string (max 31 characters for MT5)
+        """
+        # Determine strategy type
+        if signal.is_true_breakout:
+            strategy = "TB"  # True Breakout
+        else:
+            strategy = "FB"  # False Breakout
+
+        # Determine confirmations
+        confirmations = []
+        if signal.volume_confirmed:
+            confirmations.append("V")
+        if signal.divergence_confirmed:
+            confirmations.append("D")
+
+        conf_str = "".join(confirmations) if confirmations else "NC"
+
+        # Build comment: Strategy|Direction|Confirmations
+        # Example: "TB|BUY|V" or "FB|SELL|VD"
+        comment = f"{strategy}|{signal.signal_type.value.upper()}|{conf_str}"
+
+        # MT5 has a 31 character limit for comments
+        if len(comment) > 31:
+            comment = comment[:31]
+
+        return comment
 
     def _get_filling_mode(self, symbol_info: dict) -> int:
         """

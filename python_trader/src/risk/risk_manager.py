@@ -144,21 +144,22 @@ class RiskManager:
                 symbol
             )
 
-        if self.risk_config.max_lot_size > 0:
-            lot_size_before_user_max = lot_size
-            lot_size = min(self.risk_config.max_lot_size, lot_size)
-            if lot_size != lot_size_before_user_max:
-                self.logger.debug(
-                    f"After user max clamp ({self.risk_config.max_lot_size:.4f}): "
-                    f"{lot_size_before_user_max:.4f} -> {lot_size:.4f}",
-                    symbol
-                )
-            else:
-                self.logger.debug(
-                    f"User max lot ({self.risk_config.max_lot_size:.4f}) not applied - "
-                    f"lot size {lot_size:.4f} is already below max",
-                    symbol
-                )
+        # Note: If max_lot_size is 0 or negative, use symbol's min_lot
+        user_max_lot = self.risk_config.max_lot_size if self.risk_config.max_lot_size > 0 else min_lot
+        lot_size_before_user_max = lot_size
+        lot_size = min(user_max_lot, lot_size)
+        if lot_size != lot_size_before_user_max:
+            self.logger.debug(
+                f"After user max clamp ({user_max_lot:.4f}): "
+                f"{lot_size_before_user_max:.4f} -> {lot_size:.4f}",
+                symbol
+            )
+        else:
+            self.logger.debug(
+                f"User max lot ({user_max_lot:.4f}) not applied - "
+                f"lot size {lot_size:.4f} is already below max",
+                symbol
+            )
         
         # Log calculation
         self.logger.info("=== Position Sizing ===", symbol)
@@ -178,7 +179,7 @@ class RiskManager:
         if self.risk_config.max_lot_size > 0:
             self.logger.info(f"User Max Lot: {self.risk_config.max_lot_size:.2f}", symbol)
         else:
-            self.logger.info(f"User Max Lot: UNLIMITED", symbol)
+            self.logger.info(f"User Max Lot: MIN (using symbol minimum)", symbol)
         self.logger.separator()
         
         return lot_size
@@ -353,9 +354,10 @@ class RiskManager:
             # Apply min/max constraints
             adjusted_lot_size = max(min_lot, min(max_lot, adjusted_lot_size))
 
-            # Apply user-defined minimum
+            # Apply user-defined minimum and maximum
             user_min_lot = self.risk_config.min_lot_size if self.risk_config.min_lot_size > 0 else min_lot
-            adjusted_lot_size = max(user_min_lot, adjusted_lot_size)
+            user_max_lot = self.risk_config.max_lot_size if self.risk_config.max_lot_size > 0 else min_lot
+            adjusted_lot_size = max(user_min_lot, min(user_max_lot, adjusted_lot_size))
 
             # Check if adjusted lot size is still below minimum
             if adjusted_lot_size < min_lot or adjusted_lot_size < user_min_lot:
