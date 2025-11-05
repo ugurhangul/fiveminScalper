@@ -191,8 +191,8 @@ class TradingConfig:
         # Adaptive filters
         self.adaptive_filters = AdaptiveFilterConfig(
             use_adaptive_filters=os.getenv('USE_ADAPTIVE_FILTERS', 'true').lower() == 'true',
-            adaptive_loss_trigger=int(os.getenv('ADAPTIVE_LOSS_TRIGGER', '3')),
-            adaptive_win_recovery=int(os.getenv('ADAPTIVE_WIN_RECOVERY', '2')),
+            adaptive_loss_trigger=int(os.getenv('ADAPTIVE_LOSS_TRIGGER', '1')),
+            adaptive_win_recovery=int(os.getenv('ADAPTIVE_WIN_RECOVERY', '3')),
             start_with_filters_enabled=os.getenv('START_WITH_FILTERS_ENABLED', 'false').lower() == 'true'
         )
         
@@ -202,7 +202,7 @@ class TradingConfig:
             symbol_min_trades=int(os.getenv('SYMBOL_MIN_TRADES', '10')),
             symbol_min_win_rate=float(os.getenv('SYMBOL_MIN_WIN_RATE', '30.0')),
             symbol_max_loss=float(os.getenv('SYMBOL_MAX_LOSS', '-100.0')),
-            symbol_max_consecutive_losses=int(os.getenv('SYMBOL_MAX_CONSECUTIVE_LOSSES', '5')),
+            symbol_max_consecutive_losses=int(os.getenv('SYMBOL_MAX_CONSECUTIVE_LOSSES', '3')),
             symbol_cooling_period_days=int(os.getenv('SYMBOL_COOLING_PERIOD_DAYS', '7'))
         )
         

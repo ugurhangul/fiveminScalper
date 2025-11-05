@@ -57,8 +57,8 @@ class SymbolOptimizer:
             macd_slow=26,
             macd_signal=9,
             divergence_lookback=20,
-            adaptive_loss_trigger=3,
-            adaptive_win_recovery=2,
+            adaptive_loss_trigger=1,
+            adaptive_win_recovery=3,
             max_spread_percent=0.05  # Major pairs: 0.05% (tight spreads)
         ),
         SymbolCategory.MINOR_FOREX: SymbolParameters(
@@ -70,7 +70,7 @@ class SymbolOptimizer:
             macd_slow=26,
             macd_signal=9,
             divergence_lookback=25,
-            adaptive_loss_trigger=2,
+            adaptive_loss_trigger=1,
             adaptive_win_recovery=3,
             max_spread_percent=0.2  # Minor pairs: 0.2% (moderate spreads)
         ),
@@ -83,8 +83,8 @@ class SymbolOptimizer:
             macd_slow=32,
             macd_signal=12,
             divergence_lookback=30,
-            adaptive_loss_trigger=2,
-            adaptive_win_recovery=4,
+            adaptive_loss_trigger=1,
+            adaptive_win_recovery=3,
             max_spread_percent=0.05 
         ),
         SymbolCategory.METALS: SymbolParameters(
@@ -96,7 +96,7 @@ class SymbolOptimizer:
             macd_slow=26,
             macd_signal=9,
             divergence_lookback=25,
-            adaptive_loss_trigger=2,
+            adaptive_loss_trigger=1,
             adaptive_win_recovery=3,
             max_spread_percent=0.1  # Metals: 0.1%
         ),
@@ -109,8 +109,8 @@ class SymbolOptimizer:
             macd_slow=26,
             macd_signal=9,
             divergence_lookback=20,
-            adaptive_loss_trigger=3,
-            adaptive_win_recovery=2,
+            adaptive_loss_trigger=1,
+            adaptive_win_recovery=3,
             max_spread_percent=0.1  # Indices: 0.1%
         ),
         SymbolCategory.CRYPTO: SymbolParameters(
@@ -123,7 +123,7 @@ class SymbolOptimizer:
             macd_signal=12,
             divergence_lookback=40,
             adaptive_loss_trigger=1,
-            adaptive_win_recovery=5,
+            adaptive_win_recovery=3,
             max_spread_percent=0.5  # Crypto: 0.5% (very wide spreads acceptable)
         ),
         SymbolCategory.COMMODITIES: SymbolParameters(
@@ -135,7 +135,7 @@ class SymbolOptimizer:
             macd_slow=26,
             macd_signal=9,
             divergence_lookback=25,
-            adaptive_loss_trigger=2,
+             adaptive_loss_trigger=1,
             adaptive_win_recovery=3,
             max_spread_percent=0.1  # Commodities: 0.1%
         )
