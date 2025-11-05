@@ -119,7 +119,7 @@ class SymbolOptimizer:
             divergence_lookback=25,
             adaptive_loss_trigger=1,
             adaptive_win_recovery=3,
-            max_spread_percent=0.1  # Metals: 0.1%
+            max_spread_percent=0.05
         ),
         SymbolCategory.INDICES: SymbolParameters(
             enable_false_breakout_strategy=True,

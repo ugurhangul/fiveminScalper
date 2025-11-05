@@ -109,48 +109,6 @@ class OrderManager:
             )
             return None
 
-        # Check spread before executing (as percentage of price)
-        current_spread_percent = self.connector.get_spread_percent(symbol)
-        if current_spread_percent is None:
-            self.logger.trade_error(
-                symbol=symbol,
-                error_type="Spread Check",
-                error_message="Failed to get spread percentage",
-                context={"action": "Trade rejected"}
-            )
-            return None
-
-        # Also get spread in points for logging
-        current_spread_points = self.connector.get_spread(symbol)
-
-        if current_spread_percent > signal.max_spread_percent:
-            # Log spread rejection with detailed info
-            self.logger.spread_warning(
-                symbol=symbol,
-                current_spread_percent=current_spread_percent,
-                current_spread_points=current_spread_points,
-                threshold_percent=signal.max_spread_percent,
-                is_rejected=True
-            )
-            return None
-
-        # Check if spread is elevated but still acceptable (warning threshold at 80% of max)
-        warning_threshold = signal.max_spread_percent * 0.8
-        if current_spread_percent > warning_threshold:
-            self.logger.spread_warning(
-                symbol=symbol,
-                current_spread_percent=current_spread_percent,
-                current_spread_points=current_spread_points,
-                threshold_percent=signal.max_spread_percent,
-                is_rejected=False
-            )
-
-        self.logger.debug(
-            f"Spread check passed: {current_spread_percent:.3f}% ({current_spread_points:.1f} points) "
-            f"(max: {signal.max_spread_percent:.3f}%)",
-            symbol
-        )
-
         # Normalize prices and volume
         sl = self.normalize_price(symbol, signal.stop_loss)
         volume = self.normalize_volume(symbol, signal.lot_size)

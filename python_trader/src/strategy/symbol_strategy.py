@@ -124,7 +124,7 @@ class SymbolStrategy:
     def initialize(self) -> bool:
         """
         Initialize the strategy.
-        
+
         Returns:
             True if initialization successful
         """
@@ -134,12 +134,49 @@ class SymbolStrategy:
             if symbol_info is None:
                 self.logger.error(f"Symbol {self.symbol} not found in MT5")
                 return False
-            
 
-            
+            # Check spread before initializing thread
+            current_spread_percent = self.connector.get_spread_percent(self.symbol)
+            if current_spread_percent is None:
+                self.logger.trade_error(
+                    symbol=self.symbol,
+                    error_type="Spread Check",
+                    error_message="Failed to get spread percentage during initialization",
+                    context={"action": "Symbol rejected - thread will not start"}
+                )
+                return False
+
+            # Get spread in points for logging
+            current_spread_points = self.connector.get_spread(self.symbol)
+
+            # Check against configured max spread for this symbol's category
+            if current_spread_percent > self.symbol_params.max_spread_percent:
+                # Log spread rejection with detailed info
+                self.logger.spread_warning(
+                    symbol=self.symbol,
+                    current_spread_percent=current_spread_percent,
+                    current_spread_points=current_spread_points,
+                    threshold_percent=self.symbol_params.max_spread_percent,
+                    is_rejected=True
+                )
+                self.logger.error(
+                    f"Symbol {self.symbol} rejected: Spread {current_spread_percent:.3f}% "
+                    f"({current_spread_points:.1f} points) exceeds maximum {self.symbol_params.max_spread_percent:.3f}% "
+                    f"- Thread will not start",
+                    self.symbol
+                )
+                return False
+
+            # Log successful spread check
+            self.logger.info(
+                f"Spread check passed: {current_spread_percent:.3f}% ({current_spread_points:.1f} points) "
+                f"<= {self.symbol_params.max_spread_percent:.3f}%",
+                self.symbol
+            )
+
             self.is_initialized = True
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Error initializing strategy: {e}", self.symbol)
             return False
