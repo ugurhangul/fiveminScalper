@@ -36,6 +36,9 @@ class CandleProcessor:
 
         # Initialize with existing 4H candle on startup
         self._initialize_4h_candle()
+
+        # Initialize 5M candle tracking to prevent processing old candles on startup
+        self._initialize_5m_candle()
     
     def is_new_4h_candle(self) -> bool:
         """
@@ -140,11 +143,34 @@ class CandleProcessor:
     def get_current_4h_candle(self) -> Optional[FourHourCandle]:
         """
         Get the current 4H candle being tracked.
-        
+
         Returns:
             FourHourCandle object or None
         """
         return self.current_4h_candle
+
+    def _initialize_5m_candle(self):
+        """
+        Initialize 5M candle tracking on startup.
+
+        Sets last_5m_candle_time to the current last closed candle to prevent
+        processing old candles that occurred before the bot started.
+        """
+        # Get latest 5M candle
+        df = self.connector.get_candles(self.symbol, 'M5', count=2)
+        if df is None or len(df) < 2:
+            self.logger.warning("Could not retrieve 5M candles for initialization", self.symbol)
+            return
+
+        # Get the last closed 5M candle
+        last_candle = df.iloc[-2]
+        candle_time = last_candle['time']
+
+        # Set as last processed to skip it
+        self.last_5m_candle_time = candle_time
+
+        self.logger.info(f"5M candle tracking initialized at {candle_time}", self.symbol)
+        self.logger.info("Will only process NEW candles that form after this time", self.symbol)
     
     def has_4h_candle(self) -> bool:
         """

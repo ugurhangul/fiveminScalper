@@ -107,13 +107,7 @@ class SymbolStrategy:
                 self.logger.error(f"Symbol {self.symbol} not found in MT5")
                 return False
             
-            # Log initialization
-            self.logger.info("=" * 60, self.symbol)
-            self.logger.info(f"Initializing strategy for {self.symbol}", self.symbol)
-            self.logger.info(f"Category: {SymbolOptimizer.get_category_name(self.category)}", self.symbol)
-            self.logger.info(f"Volume confirmation: {self.symbol_params.volume_confirmation_enabled}", self.symbol)
-            self.logger.info(f"Divergence confirmation: {self.symbol_params.divergence_confirmation_enabled}", self.symbol)
-            self.logger.info("=" * 60, self.symbol)
+
             
             self.is_initialized = True
             return True

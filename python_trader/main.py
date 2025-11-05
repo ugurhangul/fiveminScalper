@@ -190,25 +190,6 @@ class TradingBot:
 
         # Start the controller (this starts all symbol threads)
         self.controller.start()
-
-        last_status_log = datetime.now(timezone.utc)
-
-        while self.is_running:
-            try:
-                # Log status every 5 minutes
-                if (datetime.now(timezone.utc) - last_status_log).total_seconds() >= 300:
-                    self.controller.log_status()
-                    last_status_log = datetime.now(timezone.utc)
-
-                # Sleep for 10 seconds
-                time.sleep(10)
-
-            except KeyboardInterrupt:
-                self.logger.warning("Keyboard interrupt received")
-                break
-            except Exception as e:
-                self.logger.error(f"Error in main loop: {e}")
-                time.sleep(5)  # Wait before retrying
     
     def stop(self):
         """Stop the trading bot"""
