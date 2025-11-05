@@ -3,9 +3,9 @@ Data models for the trading system.
 Ported from MQL5 structures in FMS_Config.mqh and FMS_GlobalVars.mqh
 """
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 class SymbolCategory(Enum):
@@ -163,22 +163,55 @@ class CandleData:
     low: float
     close: float
     volume: int
-    
+
     @property
     def is_bullish(self) -> bool:
         return self.close > self.open
-    
+
     @property
     def is_bearish(self) -> bool:
         return self.close < self.open
-    
+
     @property
     def body_size(self) -> float:
         return abs(self.close - self.open)
-    
+
     @property
     def range_size(self) -> float:
         return self.high - self.low
+
+
+@dataclass
+class RangeConfig:
+    """
+    Configuration for a single range-based breakout strategy.
+
+    Defines:
+    - Reference candle: The candle that establishes the high/low range
+    - Breakout candle: The smaller timeframe candle used to detect breakouts
+
+    Examples:
+    - Range 1: 4H candle at 04:00 UTC, 5M breakout detection
+    - Range 2: 15M candle at 04:30 UTC, 1M breakout detection
+    """
+    # Unique identifier for this range configuration
+    range_id: str
+
+    # Reference candle configuration (establishes the range)
+    reference_timeframe: str  # e.g., "H4", "M15"
+
+    # Breakout detection candle configuration
+    breakout_timeframe: str  # e.g., "M5", "M1"
+
+    # Optional fields with defaults
+    reference_time: Optional[time] = None  # Specific time to use (e.g., 04:00 for 4H, 04:30 for 15M)
+    use_specific_time: bool = True  # Whether to use only specific reference candle times
+
+    def __str__(self) -> str:
+        """String representation for logging"""
+        if self.use_specific_time and self.reference_time:
+            return f"{self.range_id} ({self.reference_timeframe}@{self.reference_time.strftime('%H:%M')} -> {self.breakout_timeframe})"
+        return f"{self.range_id} ({self.reference_timeframe} -> {self.breakout_timeframe})"
 
 
 @dataclass
@@ -304,6 +337,57 @@ class UnifiedBreakoutState:
 
 
 @dataclass
+class MultiRangeBreakoutState:
+    """
+    Multi-range breakout state tracking.
+
+    Manages independent breakout detection and strategy classification for multiple
+    range configurations simultaneously (e.g., 4H/5M and 15M/1M).
+
+    Each range configuration has its own UnifiedBreakoutState instance.
+    """
+    # Dictionary mapping range_id to UnifiedBreakoutState
+    range_states: Dict[str, UnifiedBreakoutState] = field(default_factory=dict)
+
+    def get_or_create_state(self, range_id: str) -> UnifiedBreakoutState:
+        """Get or create state for a specific range configuration"""
+        if range_id not in self.range_states:
+            self.range_states[range_id] = UnifiedBreakoutState()
+        return self.range_states[range_id]
+
+    def get_state(self, range_id: str) -> Optional[UnifiedBreakoutState]:
+        """Get state for a specific range configuration (returns None if not exists)"""
+        return self.range_states.get(range_id)
+
+    def has_active_breakout(self, range_id: Optional[str] = None) -> bool:
+        """
+        Check if there's an active breakout.
+
+        Args:
+            range_id: Specific range to check, or None to check all ranges
+
+        Returns:
+            True if any range has an active breakout
+        """
+        if range_id:
+            state = self.get_state(range_id)
+            return state.has_active_breakout() if state else False
+
+        # Check all ranges
+        return any(state.has_active_breakout() for state in self.range_states.values())
+
+    def reset_range(self, range_id: str):
+        """Reset state for a specific range configuration"""
+        if range_id in self.range_states:
+            self.range_states[range_id].reset_all()
+
+    def reset_all(self):
+        """Reset all range states"""
+        for state in self.range_states.values():
+            state.reset_all()
+
+
+@dataclass
 class BreakoutState:
     """
     DEPRECATED: Legacy breakout state tracking.
@@ -399,19 +483,46 @@ class BreakoutState:
 
 
 @dataclass
+class ReferenceCandle:
+    """
+    Generic reference candle for range-based breakout detection.
+    Can represent any timeframe (4H, 15M, etc.)
+    """
+    time: datetime
+    high: float
+    low: float
+    open: float
+    close: float
+    timeframe: str  # e.g., "H4", "M15"
+    is_processed: bool = False
+
+    @property
+    def range(self) -> float:
+        return self.high - self.low
+
+    @property
+    def is_bullish(self) -> bool:
+        return self.close > self.open
+
+
+@dataclass
 class FourHourCandle:
-    """4-Hour candle tracking"""
+    """
+    4-Hour candle tracking.
+    DEPRECATED: Use ReferenceCandle instead for new code.
+    Kept for backward compatibility.
+    """
     time: datetime
     high: float
     low: float
     open: float
     close: float
     is_processed: bool = False
-    
+
     @property
     def range(self) -> float:
         return self.high - self.low
-    
+
     @property
     def is_bullish(self) -> bool:
         return self.close > self.open
@@ -440,6 +551,7 @@ class TradeSignal:
     take_profit: float
     lot_size: float
     timestamp: datetime
+    range_id: str = "default"  # Identifier for which range configuration triggered this signal
     reason: str = ""
     max_spread_percent: float = 0.1  # Maximum allowed spread as percentage of price (e.g., 0.1 = 0.1%)
 

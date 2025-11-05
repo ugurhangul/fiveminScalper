@@ -152,7 +152,6 @@ class TradingController:
             )
             thread.start()
             self.threads[symbol] = thread
-            self.logger.info(f"Started thread for {symbol}", symbol)
 
         # Start position monitoring thread
         monitor_thread = threading.Thread(
@@ -354,28 +353,7 @@ class TradingController:
                 for symbol, strategy in self.strategies.items()
             }
     
-    def log_status(self):
-        """Log status of all strategies"""
-        status = self.get_status()
-        
-        self.logger.info("=" * 60)
-        self.logger.info("TRADING STATUS")
-        self.logger.info("=" * 60)
-        
-        for symbol, info in status.items():
-            self.logger.info(f"\n{symbol}:", symbol)
-            self.logger.info(f"  Category: {info['category']}", symbol)
-            self.logger.info(f"  Can Trade: {info['can_trade']}", symbol)
-            self.logger.info(f"  Has 4H Candle: {info['has_4h_candle']}", symbol)
-            
-            stats = info['stats']
-            self.logger.info(f"  Total Trades: {stats.total_trades}", symbol)
-            self.logger.info(f"  Win Rate: {stats.win_rate:.1f}%", symbol)
-            self.logger.info(f"  Net Profit: ${stats.net_profit:.2f}", symbol)
-            
-            filters = info['filter_status']
-            self.logger.info(f"  Volume Filter: {'ON' if filters['volume_active'] else 'OFF'}", symbol)
-            self.logger.info(f"  Divergence Filter: {'ON' if filters['divergence_active'] else 'OFF'}", symbol)
+      
 
     def _reconcile_positions(self):
         """

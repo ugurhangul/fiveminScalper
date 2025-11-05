@@ -83,7 +83,7 @@ class SymbolOptimizer:
             divergence_lookback=25,
             adaptive_loss_trigger=1,
             adaptive_win_recovery=3,
-            max_spread_percent=0.2  # Minor pairs: 0.2% (moderate spreads)
+            max_spread_percent=0.05 
         ),
         SymbolCategory.EXOTIC_FOREX: SymbolParameters(
             enable_false_breakout_strategy=True,
@@ -137,7 +137,7 @@ class SymbolOptimizer:
             divergence_lookback=20,
             adaptive_loss_trigger=1,
             adaptive_win_recovery=3,
-            max_spread_percent=0.1  # Indices: 0.1%
+            max_spread_percent=0.05
         ),
         SymbolCategory.CRYPTO: SymbolParameters(
             enable_false_breakout_strategy=True,

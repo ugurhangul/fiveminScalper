@@ -282,37 +282,45 @@ class OrderManager:
                     }
                 )
                 return None
-            
+
             # Log success
-            self.logger.position_opened(
-                ticket=result.order,
-                symbol=symbol,
-                position_type=signal.signal_type.value.upper(),
-                volume=volume,
-                price=result.price,
-                sl=sl,
-                tp=tp
-            )
+            try:
+                self.logger.position_opened(
+                    ticket=result.order,
+                    symbol=symbol,
+                    position_type=signal.signal_type.value.upper(),
+                    volume=volume,
+                    price=result.price,
+                    sl=sl,
+                    tp=tp
+                )
+            except Exception as log_error:
+                self.logger.error(f"Failed to log position opened: {log_error}", symbol)
+                # Continue anyway - logging failure shouldn't prevent position tracking
 
             # Add position to persistence
-            from src.models.data_models import PositionInfo
-            from datetime import datetime, timezone
+            try:
+                from src.models.data_models import PositionInfo
+                from datetime import datetime, timezone
 
-            position = PositionInfo(
-                ticket=result.order,
-                symbol=symbol,
-                position_type=signal.signal_type,
-                volume=volume,
-                open_price=result.price,
-                current_price=result.price,
-                sl=sl,
-                tp=tp,
-                profit=0.0,
-                open_time=datetime.now(timezone.utc),
-                magic_number=self.magic_number,
-                comment=trade_comment
-            )
-            self.persistence.add_position(position)
+                position = PositionInfo(
+                    ticket=result.order,
+                    symbol=symbol,
+                    position_type=signal.signal_type,
+                    volume=volume,
+                    open_price=result.price,
+                    current_price=result.price,
+                    sl=sl,
+                    tp=tp,
+                    profit=0.0,
+                    open_time=datetime.now(timezone.utc),
+                    magic_number=self.magic_number,
+                    comment=trade_comment
+                )
+                self.persistence.add_position(position)
+            except Exception as persist_error:
+                self.logger.error(f"Failed to add position to persistence: {persist_error}", symbol)
+                self.logger.error(f"Position {result.order} opened in MT5 but not tracked in bot!", symbol)
 
             return result.order
 
@@ -434,9 +442,18 @@ class OrderManager:
 
         conf_str = "".join(confirmations) if confirmations else "NC"
 
-        # Build comment: Strategy|Direction|Confirmations
-        # Example: "TB|BUY|V" or "FB|SELL|VD"
-        comment = f"{strategy}|{signal.signal_type.value.upper()}|{conf_str}"
+        # Include range ID if not default (for multi-range mode)
+        range_info = ""
+        if signal.range_id and signal.range_id != "default":
+            # Extract meaningful range identifier (e.g., "4H_5M" -> "4H5M")
+            range_info = signal.range_id.replace("_", "")
+
+        # Build comment: Strategy|Direction|Confirmations|Range
+        # Example: "TB|BUY|V|4H5M" or "FB|SELL|VD|15M1M"
+        if range_info:
+            comment = f"{strategy}|{signal.signal_type.value.upper()}|{conf_str}|{range_info}"
+        else:
+            comment = f"{strategy}|{signal.signal_type.value.upper()}|{conf_str}"
 
         # MT5 has a 31 character limit for comments
         if len(comment) > 31:

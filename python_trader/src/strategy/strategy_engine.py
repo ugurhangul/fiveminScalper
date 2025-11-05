@@ -147,9 +147,6 @@ class StrategyEngine:
                 self.logger.info(f"Breakout Volume: {candle_5m.volume}", self.symbol)
                 self.logger.info(f"Timeout will occur at: {candle_5m.time + timedelta(minutes=self.symbol_params.breakout_timeout_candles * 5)}", self.symbol)
                 self.logger.info("=" * 60, self.symbol)
-            elif close_above_high and not open_inside_range:
-                # Log rejected gap breakout
-                self.logger.info(f"[BREAKOUT REJECTED] Gap move detected - 5M open ({candle_5m.open:.5f}) outside 4H range [{candle_4h.low:.5f} - {candle_4h.high:.5f}]", self.symbol)
 
         # Check for breakout BELOW 4H low
         if not self.unified_state.breakout_below_detected:

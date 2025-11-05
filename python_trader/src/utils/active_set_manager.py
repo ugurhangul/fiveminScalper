@@ -7,22 +7,26 @@ This module handles:
 3. Removing symbols with trading disabled
 4. Removing symbols with excessive spread
 5. Logging removed symbols to disable.log
+6. Prioritizing and deduplicating symbols (r > standard > m)
 """
 from pathlib import Path
 from typing import List, Optional
 import threading
 from datetime import datetime, timezone
+from .symbol_prioritizer import SymbolPrioritizer
 
 
 class ActiveSetManager:
     """Manages the active.set file and automatic symbol removal"""
 
-    def __init__(self, file_path: str = "data/active.set"):
+    def __init__(self, file_path: str = "data/active.set", connector=None, enable_prioritization: bool = True):
         """
         Initialize the active set manager.
 
         Args:
             file_path: Path to the active.set file (relative to python_trader directory)
+            connector: MT5Connector instance for symbol validation (optional)
+            enable_prioritization: Enable automatic symbol prioritization and deduplication
         """
         # Convert to absolute path relative to this file's location
         if not Path(file_path).is_absolute():
@@ -34,6 +38,9 @@ class ActiveSetManager:
 
         self.lock = threading.Lock()
         self.symbols: List[str] = []
+        self.connector = connector
+        self.enable_prioritization = enable_prioritization
+        self.prioritizer = SymbolPrioritizer(connector) if enable_prioritization else None
         
     def _load_symbols_internal(self) -> List[str]:
         """
@@ -61,18 +68,59 @@ class ActiveSetManager:
         except Exception:
             return []
 
-    def load_symbols(self) -> List[str]:
+    def load_symbols(self, logger=None) -> List[str]:
         """
         Load symbols from active.set file.
         Handles both UTF-8 and UTF-16 encodings.
+        Automatically filters duplicates and prioritizes raw spread symbols.
+
+        Args:
+            logger: Logger instance (optional)
 
         Returns:
-            List of symbol names
+            List of symbol names (deduplicated and prioritized)
         """
         with self.lock:
-            self.symbols = self._load_symbols_internal()
+            raw_symbols = self._load_symbols_internal()
+
+            # Apply prioritization and deduplication if enabled
+            if self.enable_prioritization and self.prioritizer and raw_symbols:
+                filtered_symbols = self.prioritizer.filter_symbols(raw_symbols, logger)
+
+                # If symbols were filtered, save the updated list
+                if len(filtered_symbols) != len(raw_symbols):
+                    if logger:
+                        logger.info(f"Symbol filtering: {len(raw_symbols)} -> {len(filtered_symbols)} symbols")
+                    self.symbols = filtered_symbols
+                    # Save the filtered list back to active.set
+                    self._save_symbols_internal()
+                else:
+                    self.symbols = filtered_symbols
+            else:
+                self.symbols = raw_symbols
+
             return self.symbols.copy()
     
+    def _save_symbols_internal(self):
+        """
+        Internal method to save symbols without locking.
+        """
+        # Ensure directory exists
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with open(self.file_path, 'w', encoding='utf-8') as f:
+                # Write count on first line
+                f.write(f"{len(self.symbols)}\n")
+
+                # Write symbols
+                for symbol in self.symbols:
+                    f.write(f"{symbol}\n")
+
+        except Exception:
+            # Silently fail - error will be caught by caller
+            pass
+
     def save_symbols(self, symbols: Optional[List[str]] = None):
         """
         Save symbols to active.set file in UTF-8 encoding.
@@ -84,21 +132,7 @@ class ActiveSetManager:
             if symbols is not None:
                 self.symbols = symbols
 
-            # Ensure directory exists
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                with open(self.file_path, 'w', encoding='utf-8') as f:
-                    # Write count on first line
-                    f.write(f"{len(self.symbols)}\n")
-
-                    # Write symbols
-                    for symbol in self.symbols:
-                        f.write(f"{symbol}\n")
-
-            except Exception:
-                # Silently fail - error will be caught by caller
-                pass
+            self._save_symbols_internal()
     
     def remove_symbol(self, symbol: str, reason: str, logger=None) -> bool:
         """
@@ -224,10 +258,25 @@ class ActiveSetManager:
 _active_set_manager: Optional[ActiveSetManager] = None
 
 
-def get_active_set_manager(file_path: str = "data/active.set") -> ActiveSetManager:
-    """Get the global active set manager instance"""
+def get_active_set_manager(file_path: str = "data/active.set", connector=None, enable_prioritization: bool = True) -> ActiveSetManager:
+    """
+    Get the global active set manager instance.
+
+    Args:
+        file_path: Path to active.set file
+        connector: MT5Connector instance for symbol validation (optional)
+        enable_prioritization: Enable automatic symbol prioritization and deduplication
+
+    Returns:
+        ActiveSetManager instance
+    """
     global _active_set_manager
     if _active_set_manager is None:
-        _active_set_manager = ActiveSetManager(file_path)
+        _active_set_manager = ActiveSetManager(file_path, connector, enable_prioritization)
+    elif connector is not None and _active_set_manager.connector is None:
+        # Update connector if it wasn't set initially
+        _active_set_manager.connector = connector
+        if _active_set_manager.prioritizer:
+            _active_set_manager.prioritizer.connector = connector
     return _active_set_manager
 

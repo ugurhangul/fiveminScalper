@@ -5,7 +5,6 @@ Main entry point for the trading system.
 import sys
 import signal
 import time
-from datetime import datetime, timezone
 from typing import List
 
 from src.config.config import config
@@ -105,9 +104,10 @@ class TradingBot:
             self.logger.error("Failed to connect to MT5")
             return False
 
-        # Load symbols from active.set file
+        # Load symbols from active.set file with prioritization
         self.logger.info("Loading symbols from active.set...")
-        if not config.load_symbols_from_active_set():
+        self.logger.info("Applying symbol prioritization: Raw spread (r) > Standard > Micro (m)")
+        if not config.load_symbols_from_active_set(connector=self.connector, logger=self.logger):
             self.logger.warning("Failed to load symbols from active.set, loading from Market Watch")
             # Load from Market Watch if active.set doesn't exist
             if not config.load_symbols_from_market_watch(self.connector):
@@ -116,15 +116,15 @@ class TradingBot:
                 return False
             self.logger.info(f"Loaded {len(config.symbols)} symbols from Market Watch")
 
-            # Save to active.set for future use
+            # Save to active.set for future use (will be prioritized on next load)
             from pathlib import Path
-            from src.utils.active_set_manager import ActiveSetManager
+            from src.utils.active_set_manager import get_active_set_manager
 
-            active_set_manager = ActiveSetManager()
+            active_set_manager = get_active_set_manager(connector=self.connector)
             active_set_manager.save_symbols(config.symbols)
             self.logger.info(f"Saved {len(config.symbols)} symbols to active.set")
         else:
-            self.logger.info(f"Loaded {len(config.symbols)} symbols from active.set")
+            self.logger.info(f"Loaded {len(config.symbols)} symbols from active.set (after prioritization)")
 
         # Validate that we have symbols
         try:
@@ -190,7 +190,15 @@ class TradingBot:
 
         # Start the controller (this starts all symbol threads)
         self.controller.start()
-    
+
+        # Keep main thread alive while bot is running
+        try:
+            while self.is_running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            self.logger.warning("Keyboard interrupt received")
+            self.stop()
+
     def stop(self):
         """Stop the trading bot"""
         self.logger.info("Stopping trading bot...")
@@ -212,8 +220,8 @@ def main():
     print("""
     ╔════════════════════════════════════════════════════════════╗
     ║                                                            ║
-    ║         FiveMinScalper - Python Trading Bot               ║
-    ║         Multi-Symbol False Breakout Strategy              ║
+    ║         FiveMinScalper - Python Trading Bot                ║
+    ║         Multi-Symbol False Breakout Strategy               ║
     ║                                                            ║
     ╚════════════════════════════════════════════════════════════╝
     """)

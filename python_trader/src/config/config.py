@@ -4,9 +4,10 @@ Ported from FMS_Config.mqh
 """
 import os
 from typing import List, Dict, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import time as dt_time
 from dotenv import load_dotenv
-from src.models.data_models import SymbolCategory, SymbolParameters
+from src.models.data_models import SymbolCategory, SymbolParameters, RangeConfig
 
 
 # Load environment variables
@@ -59,9 +60,43 @@ class AdvancedConfig:
     """Advanced settings"""
     use_breakeven: bool = True
     breakeven_trigger_rr: float = 1.0
-    use_only_00_utc_candle: bool = True
+    use_only_00_utc_candle: bool = True  # Deprecated: use multi_range_mode instead
+    use_multi_range_mode: bool = True  # Enable multiple independent range configurations
     magic_number: int = 123456
     trade_comment: str = "5MinScalper"
+
+
+@dataclass
+class RangeConfigSettings:
+    """
+    Range configuration settings for multi-range breakout strategy.
+
+    Defines multiple independent range configurations that operate simultaneously.
+    Each range has its own reference candle and breakout detection timeframe.
+    """
+    # Enable/disable multi-range mode
+    enabled: bool = True
+
+    # List of range configurations
+    # Default: Two ranges operating simultaneously
+    # - Range 1: 4H candle at 04:00 UTC, 5M breakout detection
+    # - Range 2: 15M candle at 04:30 UTC, 1M breakout detection
+    ranges: List[RangeConfig] = field(default_factory=lambda: [
+        RangeConfig(
+            range_id="4H_5M",
+            reference_timeframe="H4",
+            reference_time=dt_time(4, 0),  # 04:00 UTC
+            breakout_timeframe="M5",
+            use_specific_time=True
+        ),
+        RangeConfig(
+            range_id="15M_1M",
+            reference_timeframe="M15",
+            reference_time=dt_time(4, 30),  # 04:30 UTC
+            breakout_timeframe="M1",
+            use_specific_time=True
+        )
+    ])
 
 
 @dataclass
@@ -194,8 +229,14 @@ class TradingConfig:
             use_breakeven=os.getenv('USE_BREAKEVEN', 'true').lower() == 'true',
             breakeven_trigger_rr=float(os.getenv('BREAKEVEN_TRIGGER_RR', '1.0')),
             use_only_00_utc_candle=os.getenv('USE_ONLY_00_UTC_CANDLE', 'true').lower() == 'true',
+            use_multi_range_mode=os.getenv('USE_MULTI_RANGE_MODE', 'true').lower() == 'true',
             magic_number=int(os.getenv('MAGIC_NUMBER', '123456')),
             trade_comment=os.getenv('TRADE_COMMENT', '5MinScalper')
+        )
+
+        # Range configurations for multi-range mode
+        self.range_config = RangeConfigSettings(
+            enabled=os.getenv('MULTI_RANGE_ENABLED', 'true').lower() == 'true'
         )
         
         # Logging
@@ -250,32 +291,29 @@ class TradingConfig:
         # Symbol-specific optimization enabled
         self.use_symbol_specific_settings: bool = os.getenv('USE_SYMBOL_SPECIFIC_SETTINGS', 'true').lower() == 'true'
 
-    def load_symbols_from_active_set(self, file_path: str = "data/active.set") -> bool:
+    def load_symbols_from_active_set(self, file_path: str = "data/active.set", connector=None, logger=None) -> bool:
         """
-        Load symbols from active.set file in UTF-8 encoding.
+        Load symbols from active.set file with automatic prioritization and deduplication.
 
         Args:
             file_path: Path to active.set file
+            connector: MT5Connector instance for symbol validation (optional)
+            logger: Logger instance (optional)
 
         Returns:
             True if symbols loaded successfully
         """
         from pathlib import Path
+        from ..utils.active_set_manager import get_active_set_manager
 
         active_set_path = Path(file_path)
         if not active_set_path.exists():
             return False
 
         try:
-            with open(active_set_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-
-            # First line is count, rest are symbols
-            symbols = [
-                line.strip()
-                for line in lines[1:]
-                if line.strip()
-            ]
+            # Use ActiveSetManager with prioritization
+            manager = get_active_set_manager(file_path, connector, enable_prioritization=True)
+            symbols = manager.load_symbols(logger)
 
             if not symbols:
                 return False

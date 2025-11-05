@@ -31,11 +31,7 @@ class TechnicalIndicators:
             return 0.0
         
         avg_volume = volumes.tail(period).mean()
-        
-        self.logger.debug(f"Volume Analysis:")
-        self.logger.debug(f"  Period: {period} candles")
-        self.logger.debug(f"  Average volume: {avg_volume:.0f}")
-        
+          
         return avg_volume
     
     def is_breakout_volume_low(self, breakout_volume: int, average_volume: float,
