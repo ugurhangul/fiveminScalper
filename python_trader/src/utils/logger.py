@@ -351,8 +351,9 @@ class TradingLogger:
                 f"  Losses: {stats.get('losses', 0)}",
                 f"  Net P&L: ${stats.get('net_pnl', 0):.2f}",
                 f"  Consecutive Losses: {stats.get('consecutive_losses', 0)}",
+                f"  Current Drawdown: {stats.get('current_drawdown', 0):.2f}%",
+                f"  Max Drawdown: {stats.get('max_drawdown', 0):.2f}%",
                 "",
-                f"Cooling Period: {stats.get('cooling_days', 0)} days",
                 f"Re-enable Date: {stats.get('reenable_date', 'N/A')}"
             ]
             self.box(f"SYMBOL DISABLED: {symbol}", lines)

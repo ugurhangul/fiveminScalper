@@ -81,18 +81,40 @@ class SymbolStats:
     is_enabled: bool = True
     disabled_time: Optional[datetime] = None
     disable_reason: str = ""
-    
+
+    # Drawdown tracking
+    peak_equity: float = 0.0  # Highest equity reached
+    current_drawdown: float = 0.0  # Current drawdown from peak
+    max_drawdown: float = 0.0  # Maximum drawdown ever reached
+
+    # Weekly reset tracking
+    week_start_time: Optional[datetime] = None  # When current week started
+
     @property
     def win_rate(self) -> float:
         """Calculate win rate percentage"""
         if self.total_trades == 0:
             return 0.0
         return (self.winning_trades / self.total_trades) * 100.0
-    
+
     @property
     def net_profit(self) -> float:
         """Calculate net profit/loss"""
         return self.total_profit - self.total_loss
+
+    @property
+    def current_drawdown_percent(self) -> float:
+        """Calculate current drawdown as percentage of peak equity"""
+        if self.peak_equity == 0:
+            return 0.0
+        return (self.current_drawdown / self.peak_equity) * 100.0
+
+    @property
+    def max_drawdown_percent(self) -> float:
+        """Calculate maximum drawdown as percentage of peak equity"""
+        if self.peak_equity == 0:
+            return 0.0
+        return (self.max_drawdown / self.peak_equity) * 100.0
 
 
 @dataclass

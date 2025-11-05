@@ -14,6 +14,7 @@ from src.strategy.candle_processor import CandleProcessor
 from src.strategy.strategy_engine import StrategyEngine
 from src.strategy.adaptive_filter import AdaptiveFilter
 from src.strategy.symbol_tracker import SymbolTracker
+from src.strategy.symbol_performance_persistence import SymbolPerformancePersistence
 from src.risk.risk_manager import RiskManager
 from src.config.config import config
 from src.config.symbol_optimizer import SymbolOptimizer
@@ -22,13 +23,14 @@ from src.utils.logger import get_logger
 
 class SymbolStrategy:
     """Manages trading strategy for a single symbol"""
-    
-    def __init__(self, symbol: str, connector: MT5Connector, 
+
+    def __init__(self, symbol: str, connector: MT5Connector,
                  order_manager: OrderManager, risk_manager: RiskManager,
-                 trade_manager: TradeManager, indicators: TechnicalIndicators):
+                 trade_manager: TradeManager, indicators: TechnicalIndicators,
+                 symbol_persistence: Optional[SymbolPerformancePersistence] = None):
         """
         Initialize symbol strategy.
-        
+
         Args:
             symbol: Symbol name
             connector: MT5 connector instance
@@ -36,6 +38,7 @@ class SymbolStrategy:
             risk_manager: Risk manager instance
             trade_manager: Trade manager instance
             indicators: Technical indicators instance
+            symbol_persistence: Symbol performance persistence instance (optional)
         """
         self.symbol = symbol
         self.connector = connector
@@ -79,12 +82,13 @@ class SymbolStrategy:
             config=config.adaptive_filters,
             symbol_params=self.symbol_params
         )
-        
+
         self.symbol_tracker = SymbolTracker(
             symbol=symbol,
-            config=config.symbol_adaptation
+            config=config.symbol_adaptation,
+            persistence=symbol_persistence
         )
-        
+
         # State
         self.is_initialized = False
         self.last_check_time: Optional[datetime] = None

@@ -49,6 +49,10 @@ class TradingBot:
         # Initialize position persistence (shared between OrderManager and RiskManager)
         self.persistence = PositionPersistence(data_dir="data")
 
+        # Initialize symbol performance persistence (shared across all symbols)
+        from src.strategy.symbol_performance_persistence import SymbolPerformancePersistence
+        self.symbol_persistence = SymbolPerformancePersistence(data_dir="data")
+
         self.order_manager = OrderManager(
             connector=self.connector,
             magic_number=config.advanced.magic_number,
@@ -60,14 +64,15 @@ class TradingBot:
             risk_config=config.risk,
             persistence=self.persistence
         )
+        self.indicators = TechnicalIndicators()
         self.trade_manager = TradeManager(
             connector=self.connector,
             order_manager=self.order_manager,
             trailing_config=config.trailing_stop,
             use_breakeven=config.advanced.use_breakeven,
-            breakeven_trigger_rr=config.advanced.breakeven_trigger_rr
+            breakeven_trigger_rr=config.advanced.breakeven_trigger_rr,
+            indicators=self.indicators
         )
-        self.indicators = TechnicalIndicators()
 
         # Trading controller
         self.controller = TradingController(
@@ -75,7 +80,8 @@ class TradingBot:
             order_manager=self.order_manager,
             risk_manager=self.risk_manager,
             trade_manager=self.trade_manager,
-            indicators=self.indicators
+            indicators=self.indicators,
+            symbol_persistence=self.symbol_persistence
         )
 
         # Running flag

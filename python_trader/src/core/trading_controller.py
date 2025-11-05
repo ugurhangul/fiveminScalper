@@ -4,7 +4,7 @@ Orchestrates concurrent trading across multiple symbols.
 """
 import threading
 import time
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 from datetime import datetime, timezone
 
 from src.core.mt5_connector import MT5Connector
@@ -13,6 +13,7 @@ from src.execution.trade_manager import TradeManager
 from src.indicators.technical_indicators import TechnicalIndicators
 from src.risk.risk_manager import RiskManager
 from src.strategy.symbol_strategy import SymbolStrategy
+from src.strategy.symbol_performance_persistence import SymbolPerformancePersistence
 from src.models.data_models import PositionInfo, PositionType
 from src.config.config import config
 from src.utils.logger import get_logger
@@ -20,19 +21,21 @@ from src.utils.logger import get_logger
 
 class TradingController:
     """Controls multi-symbol trading operations"""
-    
+
     def __init__(self, connector: MT5Connector, order_manager: OrderManager,
                  risk_manager: RiskManager, trade_manager: TradeManager,
-                 indicators: TechnicalIndicators):
+                 indicators: TechnicalIndicators,
+                 symbol_persistence: Optional[SymbolPerformancePersistence] = None):
         """
         Initialize trading controller.
-        
+
         Args:
             connector: MT5 connector instance
             order_manager: Order manager instance
             risk_manager: Risk manager instance
             trade_manager: Trade manager instance
             indicators: Technical indicators instance
+            symbol_persistence: Symbol performance persistence instance (optional)
         """
         self.connector = connector
         self.order_manager = order_manager
@@ -40,10 +43,13 @@ class TradingController:
         self.trade_manager = trade_manager
         self.indicators = indicators
         self.logger = get_logger()
-        
+
+        # Symbol performance persistence (shared across all symbols)
+        self.symbol_persistence = symbol_persistence if symbol_persistence is not None else SymbolPerformancePersistence()
+
         # Symbol strategies
         self.strategies: Dict[str, SymbolStrategy] = {}
-        
+
         # Threading
         self.threads: Dict[str, threading.Thread] = {}
         self.running = False
@@ -81,9 +87,10 @@ class TradingController:
                     order_manager=self.order_manager,
                     risk_manager=self.risk_manager,
                     trade_manager=self.trade_manager,
-                    indicators=self.indicators
+                    indicators=self.indicators,
+                    symbol_persistence=self.symbol_persistence
                 )
-                
+
                 # Initialize strategy
                 if strategy.initialize():
                     self.strategies[symbol] = strategy

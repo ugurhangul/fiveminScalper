@@ -39,6 +39,12 @@ class TrailingStopConfig:
     trailing_stop_trigger_rr: float = 1.5
     trailing_stop_distance: float = 50.0
 
+    # ATR-based trailing stop
+    use_atr_trailing: bool = False
+    atr_period: int = 14
+    atr_multiplier: float = 2.0
+    atr_timeframe: str = "H4"
+
 
 @dataclass
 class TradingHoursConfig:
@@ -86,11 +92,15 @@ class AdaptiveFilterConfig:
 class SymbolAdaptationConfig:
     """Symbol-level adaptation settings"""
     use_symbol_adaptation: bool = True
-    symbol_min_trades: int = 10
-    symbol_min_win_rate: float = 30.0
-    symbol_max_loss: float = -100.0
-    symbol_max_consecutive_losses: int = 5
-    symbol_cooling_period_days: int = 7
+    min_trades_for_evaluation: int = 10  # Renamed for clarity
+    min_win_rate: float = 30.0  # Minimum win rate percentage
+    max_total_loss: float = 100.0  # Maximum total loss (positive value)
+    max_consecutive_losses: int = 3  # Maximum consecutive losses before disable
+    max_drawdown_percent: float = 15.0  # Maximum drawdown percentage before disable
+    cooling_period_hours: int = 168  # Cooling period in hours (168 = 7 days)
+    reset_weekly: bool = True  # Reset stats at start of each trading week
+    weekly_reset_day: int = 0  # Day of week to reset (0=Monday, 6=Sunday)
+    weekly_reset_hour: int = 0  # Hour (UTC) to reset on reset day
 
 
 @dataclass
@@ -165,7 +175,11 @@ class TradingConfig:
         self.trailing_stop = TrailingStopConfig(
             use_trailing_stop=os.getenv('USE_TRAILING_STOP', 'false').lower() == 'true',
             trailing_stop_trigger_rr=float(os.getenv('TRAILING_STOP_TRIGGER_RR', '1.5')),
-            trailing_stop_distance=float(os.getenv('TRAILING_STOP_DISTANCE', '50.0'))
+            trailing_stop_distance=float(os.getenv('TRAILING_STOP_DISTANCE', '50.0')),
+            use_atr_trailing=os.getenv('USE_ATR_TRAILING', 'false').lower() == 'true',
+            atr_period=int(os.getenv('ATR_PERIOD', '14')),
+            atr_multiplier=float(os.getenv('ATR_MULTIPLIER', '2.0')),
+            atr_timeframe=os.getenv('ATR_TIMEFRAME', 'H4')
         )
         
         # Trading hours
@@ -205,11 +219,15 @@ class TradingConfig:
         # Symbol adaptation
         self.symbol_adaptation = SymbolAdaptationConfig(
             use_symbol_adaptation=os.getenv('USE_SYMBOL_ADAPTATION', 'true').lower() == 'true',
-            symbol_min_trades=int(os.getenv('SYMBOL_MIN_TRADES', '10')),
-            symbol_min_win_rate=float(os.getenv('SYMBOL_MIN_WIN_RATE', '30.0')),
-            symbol_max_loss=float(os.getenv('SYMBOL_MAX_LOSS', '-100.0')),
-            symbol_max_consecutive_losses=int(os.getenv('SYMBOL_MAX_CONSECUTIVE_LOSSES', '3')),
-            symbol_cooling_period_days=int(os.getenv('SYMBOL_COOLING_PERIOD_DAYS', '7'))
+            min_trades_for_evaluation=int(os.getenv('SYMBOL_MIN_TRADES', '10')),
+            min_win_rate=float(os.getenv('SYMBOL_MIN_WIN_RATE', '30.0')),
+            max_total_loss=float(os.getenv('SYMBOL_MAX_TOTAL_LOSS', '100.0')),
+            max_consecutive_losses=int(os.getenv('SYMBOL_MAX_CONSECUTIVE_LOSSES', '3')),
+            max_drawdown_percent=float(os.getenv('SYMBOL_MAX_DRAWDOWN_PERCENT', '15.0')),
+            cooling_period_hours=int(os.getenv('SYMBOL_COOLING_PERIOD_HOURS', '168')),
+            reset_weekly=os.getenv('SYMBOL_RESET_WEEKLY', 'true').lower() == 'true',
+            weekly_reset_day=int(os.getenv('SYMBOL_WEEKLY_RESET_DAY', '0')),
+            weekly_reset_hour=int(os.getenv('SYMBOL_WEEKLY_RESET_HOUR', '0'))
         )
         
         # Volume confirmation

@@ -75,6 +75,43 @@ class TechnicalIndicators:
         
         return is_low
     
+    def calculate_atr(self, high: pd.Series, low: pd.Series, close: pd.Series,
+                     period: int = 14) -> Optional[float]:
+        """
+        Calculate Average True Range (ATR).
+
+        Args:
+            high: Series of high prices
+            low: Series of low prices
+            close: Series of close prices
+            period: Period for ATR calculation (default: 14)
+
+        Returns:
+            Current ATR value or None if insufficient data
+        """
+        if len(high) < period + 1 or len(low) < period + 1 or len(close) < period + 1:
+            self.logger.warning(f"Not enough data for ATR calculation: need {period + 1}, have {len(close)}")
+            return None
+
+        try:
+            # Calculate ATR using talib
+            atr_values = talib.ATR(high.values, low.values, close.values, timeperiod=period)
+
+            # Get the most recent ATR value
+            current_atr = atr_values[-1]
+
+            if np.isnan(current_atr):
+                self.logger.warning("ATR calculation returned NaN")
+                return None
+
+            self.logger.debug(f"ATR({period}): {current_atr:.5f}")
+
+            return float(current_atr)
+
+        except Exception as e:
+            self.logger.error(f"Error calculating ATR: {e}")
+            return None
+
     def is_reversal_volume_high(self, reversal_volume: int, average_volume: float,
                                 min_threshold: float, symbol: str) -> bool:
         """
