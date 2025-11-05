@@ -55,10 +55,10 @@ class TradingController:
     def initialize(self, symbols: List[str]) -> bool:
         """
         Initialize strategies for all symbols.
-        
+
         Args:
             symbols: List of symbol names
-            
+
         Returns:
             True if all strategies initialized successfully
         """
@@ -66,7 +66,10 @@ class TradingController:
         self.logger.info("Initializing Trading Controller")
         self.logger.info(f"Symbols: {', '.join(symbols)}")
         self.logger.info("=" * 60)
-        
+
+        # Reconcile persisted positions with MT5 on startup
+        self._reconcile_positions()
+
         success_count = 0
         
         for symbol in symbols:
@@ -87,10 +90,23 @@ class TradingController:
                     success_count += 1
                     self.logger.info(f"✓ {symbol} initialized", symbol)
                 else:
-                    self.logger.error(f"✗ {symbol} initialization failed", symbol)
-                    
+                    self.logger.trade_error(
+                        symbol=symbol,
+                        error_type="Initialization",
+                        error_message="Strategy initialization failed",
+                        context={"action": "Symbol will not be traded"}
+                    )
+
             except Exception as e:
-                self.logger.error(f"Error initializing {symbol}: {e}", symbol)
+                self.logger.trade_error(
+                    symbol=symbol,
+                    error_type="Initialization",
+                    error_message=f"Exception during initialization: {str(e)}",
+                    context={
+                        "exception_type": type(e).__name__,
+                        "action": "Symbol will not be traded"
+                    }
+                )
         
         self.logger.info("=" * 60)
         self.logger.info(f"Initialized {success_count}/{len(symbols)} symbols")
@@ -164,12 +180,17 @@ class TradingController:
 
                 # Process tick
                 strategy.on_tick()
-
-                # Sleep for 1 second
-                time.sleep(1)
-
+                time.sleep(1)  # Sleep for 1 second (adjust as needed)
             except Exception as e:
-                self.logger.error(f"Error in worker thread: {e}", symbol)
+                self.logger.trade_error(
+                    symbol=symbol,
+                    error_type="Worker Thread",
+                    error_message=f"Exception in symbol worker thread: {str(e)}",
+                    context={
+                        "exception_type": type(e).__name__,
+                        "action": "Retrying in 5 seconds"
+                    }
+                )
                 time.sleep(5)  # Wait before retrying
 
         self.logger.info(f"Worker thread stopped for {symbol}", symbol)
@@ -348,6 +369,45 @@ class TradingController:
             filters = info['filter_status']
             self.logger.info(f"  Volume Filter: {'ON' if filters['volume_active'] else 'OFF'}", symbol)
             self.logger.info(f"  Divergence Filter: {'ON' if filters['divergence_active'] else 'OFF'}", symbol)
-        
+
+    def _reconcile_positions(self):
+        """
+        Reconcile persisted positions with actual MT5 positions on startup.
+
+        This prevents duplicate position creation after bot restart by:
+        1. Loading positions from persistence file
+        2. Comparing with actual MT5 positions
+        3. Syncing the two sources of truth
+        """
+        self.logger.info("=" * 60)
+        self.logger.info("RECONCILING POSITIONS WITH MT5")
+        self.logger.info("=" * 60)
+
+        try:
+            # Get all MT5 positions with our magic number
+            mt5_positions = self.connector.get_positions(
+                magic_number=config.advanced.magic_number
+            )
+
+            self.logger.info(f"Found {len(mt5_positions)} positions in MT5")
+
+            # Reconcile with persistence
+            results = self.order_manager.persistence.reconcile_with_mt5(mt5_positions)
+
+            # Log results
+            if results['added'] or results['removed'] or results['updated']:
+                self.logger.info("Reconciliation Summary:")
+                self.logger.info(f"  Added to tracking: {len(results['added'])}")
+                self.logger.info(f"  Removed from tracking: {len(results['removed'])}")
+                self.logger.info(f"  Updated: {len(results['updated'])}")
+            else:
+                self.logger.info("All positions already in sync")
+
+            self.logger.info("=" * 60)
+
+        except Exception as e:
+            self.logger.error(f"Error during position reconciliation: {e}")
+            self.logger.warning("Continuing with initialization...")
+
         self.logger.info("=" * 60)
 

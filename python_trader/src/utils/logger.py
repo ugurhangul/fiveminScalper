@@ -72,6 +72,8 @@ class TradingLogger:
         self.enable_detailed = enable_detailed
         self.log_dir = Path("logs")
         self.symbol_handlers: Dict[str, logging.FileHandler] = {}
+        self.disable_log_handler: Optional[logging.FileHandler] = None
+        self.disabled_symbols: set = set()  # Track disabled symbols to avoid duplicates
 
         # Create logs directory if it doesn't exist
         if log_to_file:
@@ -95,6 +97,12 @@ class TradingLogger:
             )
             file_handler.setFormatter(file_formatter)
             self.logger.addHandler(file_handler)
+
+            # Create disable log file: logs/YYYY-MM-DD/disable.log
+            disable_log_file = date_dir / "disable.log"
+            self.disable_log_handler = logging.FileHandler(disable_log_file, encoding='utf-8')
+            self.disable_log_handler.setLevel(logging.INFO)
+            self.disable_log_handler.setFormatter(file_formatter)
 
         # Create console handler with colors (still using UTC)
         if log_to_console:
@@ -296,37 +304,236 @@ class TradingLogger:
         self.info(f"R:R Achieved: {rr_achieved:.2f}")
         self.separator()
     
-    def symbol_disabled(self, symbol: str, reason: str, stats: dict):
-        """Log symbol disabled"""
-        lines = [
-            f"Reason: {reason}",
-            "",
-            "Statistics:",
-            f"  Total Trades: {stats.get('total_trades', 0)}",
-            f"  Wins: {stats.get('wins', 0)} ({stats.get('win_rate', 0):.1f}%)",
-            f"  Losses: {stats.get('losses', 0)}",
-            f"  Net P&L: ${stats.get('net_pnl', 0):.2f}",
-            f"  Consecutive Losses: {stats.get('consecutive_losses', 0)}",
-            "",
-            f"Cooling Period: {stats.get('cooling_days', 0)} days",
-            f"Re-enable Date: {stats.get('reenable_date', 'N/A')}"
-        ]
-        self.box(f"SYMBOL DISABLED: {symbol}", lines)
-    
-    def symbol_reenabled(self, symbol: str, old_stats: dict):
-        """Log symbol re-enabled"""
-        lines = [
-            "Reason: Cooling period expired",
-            "",
-            "Previous Performance:",
-            f"  Total Trades: {old_stats.get('total_trades', 0)}",
-            f"  Net P&L: ${old_stats.get('net_pnl', 0):.2f}",
-            f"  Disable Reason: {old_stats.get('disable_reason', 'N/A')}",
-            "",
-            "Statistics: RESET",
-            "Status: Ready to trade"
-        ]
-        self.box(f"SYMBOL RE-ENABLED: {symbol}", lines)
+    def symbol_disabled(self, symbol: str, reason: str, stats: Optional[dict] = None):
+        """
+        Log symbol disabled event.
+
+        Args:
+            symbol: Symbol name
+            reason: Reason for disabling
+            stats: Optional statistics dictionary
+        """
+        # Check if symbol is already in disabled set (avoid duplicate logging)
+        if symbol in self.disabled_symbols:
+            return
+
+        # Add to disabled set
+        self.disabled_symbols.add(symbol)
+
+        # Prepare log message
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        message = f"[{symbol}] DISABLED | Reason: {reason}"
+
+        # Log to main log
+        self.info(f"Symbol disabled: {reason}", symbol)
+
+        # Log to disable.log
+        if self.disable_log_handler:
+            record = self.logger.makeRecord(
+                self.logger.name,
+                logging.INFO,
+                "(disable_log)",
+                0,
+                message,
+                (),
+                None
+            )
+            self.disable_log_handler.emit(record)
+
+        # Log detailed box if stats provided
+        if stats:
+            lines = [
+                f"Reason: {reason}",
+                "",
+                "Statistics:",
+                f"  Total Trades: {stats.get('total_trades', 0)}",
+                f"  Wins: {stats.get('wins', 0)} ({stats.get('win_rate', 0):.1f}%)",
+                f"  Losses: {stats.get('losses', 0)}",
+                f"  Net P&L: ${stats.get('net_pnl', 0):.2f}",
+                f"  Consecutive Losses: {stats.get('consecutive_losses', 0)}",
+                "",
+                f"Cooling Period: {stats.get('cooling_days', 0)} days",
+                f"Re-enable Date: {stats.get('reenable_date', 'N/A')}"
+            ]
+            self.box(f"SYMBOL DISABLED: {symbol}", lines)
+
+    def symbol_reenabled(self, symbol: str, old_stats: Optional[dict] = None):
+        """
+        Log symbol re-enabled event.
+
+        Args:
+            symbol: Symbol name
+            old_stats: Optional previous statistics dictionary
+        """
+        # Remove from disabled set
+        self.disabled_symbols.discard(symbol)
+
+        # Prepare log message
+        message = f"[{symbol}] RE-ENABLED | Cooling period expired"
+
+        # Log to main log
+        self.info("Symbol re-enabled after cooling period", symbol)
+
+        # Log to disable.log
+        if self.disable_log_handler:
+            record = self.logger.makeRecord(
+                self.logger.name,
+                logging.INFO,
+                "(disable_log)",
+                0,
+                message,
+                (),
+                None
+            )
+            self.disable_log_handler.emit(record)
+
+        # Log detailed box if stats provided
+        if old_stats:
+            lines = [
+                "Reason: Cooling period expired",
+                "",
+                "Previous Performance:",
+                f"  Total Trades: {old_stats.get('total_trades', 0)}",
+                f"  Net P&L: ${old_stats.get('net_pnl', 0):.2f}",
+                f"  Disable Reason: {old_stats.get('disable_reason', 'N/A')}",
+                "",
+                "Statistics: RESET",
+                "Status: Ready to trade"
+            ]
+            self.box(f"SYMBOL RE-ENABLED: {symbol}", lines)
+
+    def trade_error(self, symbol: str, error_type: str, error_message: str,
+                   context: Optional[dict] = None, remove_from_active_set: bool = True):
+        """
+        Log trade execution or data retrieval error with comprehensive details.
+        Optionally removes symbol from active.set if error is persistent.
+
+        Args:
+            symbol: Symbol name
+            error_type: Type of error (e.g., "Trade Execution", "Data Retrieval", "Spread Check")
+            error_message: Specific error message or exception
+            context: Optional context dictionary with additional details
+            remove_from_active_set: Whether to check if symbol should be removed from active.set
+        """
+        # Build error message
+        message = f"{error_type} Error: {error_message}"
+
+        # Log to main error log
+        self.error(message, symbol)
+
+        # Log detailed context if provided
+        if context:
+            for key, value in context.items():
+                self.error(f"  {key}: {value}", symbol)
+
+        # Check if symbol should be removed from active.set
+        if remove_from_active_set:
+            try:
+                from src.utils.active_set_manager import get_active_set_manager
+
+                manager = get_active_set_manager()
+                if manager.should_remove_symbol(error_message):
+                    # Remove from active.set
+                    if manager.remove_symbol(symbol, f"{error_type}: {error_message}", self):
+                        self.warning(
+                            f"Symbol removed from active.set due to persistent error: {error_message}",
+                            symbol
+                        )
+            except Exception:
+                # Don't crash if active set manager fails
+                pass
+
+    def spread_warning(self, symbol: str, current_spread_percent: float,
+                      current_spread_points: float, threshold_percent: float,
+                      is_rejected: bool = False, remove_from_active_set: bool = True):
+        """
+        Log spread-related warnings.
+        Optionally removes symbol from active.set if spread is consistently too high.
+
+        Args:
+            symbol: Symbol name
+            current_spread_percent: Current spread as percentage
+            current_spread_points: Current spread in points
+            threshold_percent: Maximum allowed spread percentage
+            is_rejected: Whether trade was rejected due to spread
+            remove_from_active_set: Whether to check if symbol should be removed from active.set
+        """
+        status = "REJECTED" if is_rejected else "WARNING"
+        message = (
+            f"Spread {status}: {current_spread_percent:.3f}% ({current_spread_points:.1f} points) "
+            f"| Threshold: {threshold_percent:.3f}%"
+        )
+
+        if is_rejected:
+            self.warning(message, symbol)
+
+            # Remove from active.set if spread is rejected
+            if remove_from_active_set:
+                try:
+                    from src.utils.active_set_manager import get_active_set_manager
+
+                    manager = get_active_set_manager()
+                    error_msg = f"Spread too high: {current_spread_percent:.3f}% (max: {threshold_percent:.3f}%)"
+
+                    if manager.remove_symbol(symbol, error_msg, self):
+                        self.warning(
+                            f"Symbol removed from active.set due to excessive spread",
+                            symbol
+                        )
+                except Exception:
+                    # Don't crash if active set manager fails
+                    pass
+        else:
+            self.warning(f"Elevated spread: {message}", symbol)
+
+    def liquidity_warning(self, symbol: str, volume: float, avg_volume: float,
+                         reason: str):
+        """
+        Log liquidity or volume warnings.
+
+        Args:
+            symbol: Symbol name
+            volume: Current volume
+            avg_volume: Average volume
+            reason: Reason for warning
+        """
+        message = (
+            f"Liquidity Warning: {reason} | "
+            f"Current Volume: {volume:.0f} | Average: {avg_volume:.0f}"
+        )
+        self.warning(message, symbol)
+
+    def symbol_condition_warning(self, symbol: str, condition: str, details: str,
+                                remove_from_active_set: bool = True):
+        """
+        Log general symbol-specific condition warnings.
+        Optionally removes symbol from active.set for persistent conditions.
+
+        Args:
+            symbol: Symbol name
+            condition: Condition type (e.g., "Market Hours", "Trading Disabled")
+            details: Additional details about the condition
+            remove_from_active_set: Whether to check if symbol should be removed from active.set
+        """
+        message = f"{condition}: {details}"
+        self.warning(message, symbol)
+
+        # Remove from active.set if trading is disabled
+        if remove_from_active_set and "Trading Disabled" in condition:
+            try:
+                from src.utils.active_set_manager import get_active_set_manager
+
+                manager = get_active_set_manager()
+                error_msg = f"{condition}: {details}"
+
+                if manager.remove_symbol(symbol, error_msg, self):
+                    self.warning(
+                        f"Symbol removed from active.set: {condition}",
+                        symbol
+                    )
+            except Exception:
+                # Don't crash if active set manager fails
+                pass
 
 
 # Global logger instance

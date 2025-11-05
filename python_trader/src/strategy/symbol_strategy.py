@@ -224,7 +224,18 @@ class SymbolStrategy:
         if ticket:
             self.logger.info(f"Trade executed successfully! Ticket: {ticket}", self.symbol)
         else:
-            self.logger.error("Failed to execute trade", self.symbol)
+            self.logger.trade_error(
+                symbol=self.symbol,
+                error_type="Trade Execution",
+                error_message="Failed to execute trade signal",
+                context={
+                    "signal_type": signal.signal_type.value.upper(),
+                    "entry_price": signal.entry_price,
+                    "stop_loss": signal.stop_loss,
+                    "take_profit": signal.take_profit,
+                    "lot_size": signal.lot_size
+                }
+            )
     
     def _manage_positions(self):
         """Manage open positions for this symbol"""

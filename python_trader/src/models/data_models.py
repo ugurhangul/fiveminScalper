@@ -59,6 +59,11 @@ class SymbolParameters:
     adaptive_loss_trigger: int = 3
     adaptive_win_recovery: int = 2
 
+    # Breakout timeout (in number of 5M candles)
+    # Prevents trading on stale breakouts that have lost momentum
+    # Default: 24 candles = 2 hours
+    breakout_timeout_candles: int = 24
+
     # Spread limit (as percentage of price, e.g., 0.1 = 0.1%)
     max_spread_percent: float = 0.1
 
@@ -155,8 +160,134 @@ class CandleData:
 
 
 @dataclass
+class UnifiedBreakoutState:
+    """
+    Unified breakout state tracking.
+
+    Stage 1: Unified breakout detection
+    Stage 2: Strategy classification (both strategies can evaluate simultaneously)
+    """
+    # === STAGE 1: UNIFIED BREAKOUT DETECTION ===
+    # Breakout above 4H high
+    breakout_above_detected: bool = False
+    breakout_above_volume: int = 0
+    breakout_above_time: Optional[datetime] = None
+
+    # Breakout below 4H low
+    breakout_below_detected: bool = False
+    breakout_below_volume: int = 0
+    breakout_below_time: Optional[datetime] = None
+
+    # === STAGE 2: STRATEGY CLASSIFICATION ===
+    # FALSE BREAKOUT - Reversal from BELOW (BUY signal)
+    false_buy_qualified: bool = False  # Low volume breakout below
+    false_buy_reversal_detected: bool = False  # Reversed back above
+    false_buy_reversal_volume: int = 0
+    false_buy_volume_ok: bool = False  # Breakout volume was low (tracked, not required)
+    false_buy_reversal_volume_ok: bool = False  # Reversal volume was high (tracked, not required)
+    false_buy_divergence_ok: bool = False  # Divergence present (tracked, not required)
+    false_buy_rejected: bool = False  # Strategy explicitly rejected this setup
+
+    # FALSE BREAKOUT - Reversal from ABOVE (SELL signal)
+    false_sell_qualified: bool = False  # Low volume breakout above
+    false_sell_reversal_detected: bool = False  # Reversed back below
+    false_sell_reversal_volume: int = 0
+    false_sell_volume_ok: bool = False  # Breakout volume was low (tracked, not required)
+    false_sell_reversal_volume_ok: bool = False  # Reversal volume was high (tracked, not required)
+    false_sell_divergence_ok: bool = False  # Divergence present (tracked, not required)
+    false_sell_rejected: bool = False  # Strategy explicitly rejected this setup
+
+    # TRUE BREAKOUT - Continuation ABOVE (BUY signal)
+    true_buy_qualified: bool = False  # High volume breakout above
+    true_buy_retest_detected: bool = False  # Price retested breakout level (pulled back to 4H high)
+    true_buy_continuation_detected: bool = False  # Continued above after retest
+    true_buy_continuation_volume: int = 0
+    true_buy_volume_ok: bool = False  # Breakout volume was high (tracked, not required)
+    true_buy_retest_ok: bool = False  # Retest occurred (tracked, not required)
+    true_buy_continuation_volume_ok: bool = False  # Continuation volume was high (tracked, not required)
+    true_buy_rejected: bool = False  # Strategy explicitly rejected this setup
+
+    # TRUE BREAKOUT - Continuation BELOW (SELL signal)
+    true_sell_qualified: bool = False  # High volume breakout below
+    true_sell_retest_detected: bool = False  # Price retested breakout level (pulled back to 4H low)
+    true_sell_continuation_detected: bool = False  # Continued below after retest
+    true_sell_continuation_volume: int = 0
+    true_sell_volume_ok: bool = False  # Breakout volume was high (tracked, not required)
+    true_sell_retest_ok: bool = False  # Retest occurred (tracked, not required)
+    true_sell_continuation_volume_ok: bool = False  # Continuation volume was high (tracked, not required)
+    true_sell_rejected: bool = False  # Strategy explicitly rejected this setup
+
+    def has_active_breakout(self) -> bool:
+        """Check if there's an active breakout being tracked"""
+        return self.breakout_above_detected or self.breakout_below_detected
+
+    def both_strategies_rejected(self) -> bool:
+        """Check if both strategies have rejected the current setup"""
+        if self.breakout_above_detected:
+            # For breakout above: check TRUE BUY and FALSE SELL
+            return self.true_buy_rejected and self.false_sell_rejected
+        elif self.breakout_below_detected:
+            # For breakout below: check TRUE SELL and FALSE BUY
+            return self.true_sell_rejected and self.false_buy_rejected
+        return False
+
+    def reset_breakout_above(self):
+        """Reset breakout above 4H high"""
+        self.breakout_above_detected = False
+        self.breakout_above_volume = 0
+        self.breakout_above_time = None
+        # Reset associated strategies
+        self.true_buy_qualified = False
+        self.true_buy_retest_detected = False
+        self.true_buy_continuation_detected = False
+        self.true_buy_continuation_volume = 0
+        self.true_buy_volume_ok = False
+        self.true_buy_retest_ok = False
+        self.true_buy_continuation_volume_ok = False
+        self.true_buy_rejected = False
+        self.false_sell_qualified = False
+        self.false_sell_reversal_detected = False
+        self.false_sell_reversal_volume = 0
+        self.false_sell_volume_ok = False
+        self.false_sell_reversal_volume_ok = False
+        self.false_sell_divergence_ok = False
+        self.false_sell_rejected = False
+
+    def reset_breakout_below(self):
+        """Reset breakout below 4H low"""
+        self.breakout_below_detected = False
+        self.breakout_below_volume = 0
+        self.breakout_below_time = None
+        # Reset associated strategies
+        self.true_sell_qualified = False
+        self.true_sell_retest_detected = False
+        self.true_sell_continuation_detected = False
+        self.true_sell_continuation_volume = 0
+        self.true_sell_volume_ok = False
+        self.true_sell_retest_ok = False
+        self.true_sell_continuation_volume_ok = False
+        self.true_sell_rejected = False
+        self.false_buy_qualified = False
+        self.false_buy_reversal_detected = False
+        self.false_buy_reversal_volume = 0
+        self.false_buy_volume_ok = False
+        self.false_buy_reversal_volume_ok = False
+        self.false_buy_divergence_ok = False
+        self.false_buy_rejected = False
+
+    def reset_all(self):
+        """Reset all tracking"""
+        self.reset_breakout_above()
+        self.reset_breakout_below()
+
+
+@dataclass
 class BreakoutState:
-    """Tracks breakout and reversal state for a symbol"""
+    """
+    DEPRECATED: Legacy breakout state tracking.
+    Kept for backward compatibility during migration.
+    Use UnifiedBreakoutState instead.
+    """
     # FALSE BREAKOUT - BUY signal tracking (reversal strategy)
     buy_breakout_confirmed: bool = False
     buy_reversal_confirmed: bool = False

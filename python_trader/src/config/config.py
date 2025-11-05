@@ -232,6 +232,42 @@ class TradingConfig:
         # Symbol-specific optimization enabled
         self.use_symbol_specific_settings: bool = os.getenv('USE_SYMBOL_SPECIFIC_SETTINGS', 'true').lower() == 'true'
 
+    def load_symbols_from_active_set(self, file_path: str = "data/active.set") -> bool:
+        """
+        Load symbols from active.set file in UTF-8 encoding.
+
+        Args:
+            file_path: Path to active.set file
+
+        Returns:
+            True if symbols loaded successfully
+        """
+        from pathlib import Path
+
+        active_set_path = Path(file_path)
+        if not active_set_path.exists():
+            return False
+
+        try:
+            with open(active_set_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            # First line is count, rest are symbols
+            symbols = [
+                line.strip()
+                for line in lines[1:]
+                if line.strip()
+            ]
+
+            if not symbols:
+                return False
+
+            self.symbols = symbols
+            return True
+
+        except Exception:
+            return False
+
     def load_symbols_from_market_watch(self, connector) -> bool:
         """
         Load symbols from MetaTrader's Market Watch list.

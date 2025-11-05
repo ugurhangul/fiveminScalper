@@ -115,19 +115,37 @@ class MT5Connector:
         try:
             # Get candles
             rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
-            
+
             if rates is None or len(rates) == 0:
-                self.logger.error(f"Failed to get candles for {symbol} {timeframe}")
+                self.logger.trade_error(
+                    symbol=symbol,
+                    error_type="Data Retrieval",
+                    error_message=f"Failed to get {timeframe} candles from MT5",
+                    context={
+                        "timeframe": timeframe,
+                        "count": count,
+                        "mt5_error": str(mt5.last_error())
+                    }
+                )
                 return None
-            
+
             # Convert to DataFrame
             df = pd.DataFrame(rates)
             df['time'] = pd.to_datetime(df['time'], unit='s')
-            
+
             return df
-            
+
         except Exception as e:
-            self.logger.error(f"Error getting candles for {symbol}: {e}")
+            self.logger.trade_error(
+                symbol=symbol,
+                error_type="Data Retrieval",
+                error_message=f"Exception while getting {timeframe} candles: {str(e)}",
+                context={
+                    "timeframe": timeframe,
+                    "count": count,
+                    "exception_type": type(e).__name__
+                }
+            )
             return None
     
     def get_latest_candle(self, symbol: str, timeframe: str) -> Optional[CandleData]:

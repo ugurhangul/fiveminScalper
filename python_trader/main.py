@@ -12,6 +12,7 @@ from src.config.config import config
 from src.core.mt5_connector import MT5Connector
 from src.core.trading_controller import TradingController
 from src.execution.order_manager import OrderManager
+from src.execution.position_persistence import PositionPersistence
 from src.execution.trade_manager import TradeManager
 from src.indicators.technical_indicators import TechnicalIndicators
 from src.risk.risk_manager import RiskManager
@@ -44,14 +45,20 @@ class TradingBot:
         
         # Initialize components
         self.connector = MT5Connector(config.mt5)
+
+        # Initialize position persistence (shared between OrderManager and RiskManager)
+        self.persistence = PositionPersistence(data_dir="data")
+
         self.order_manager = OrderManager(
             connector=self.connector,
             magic_number=config.advanced.magic_number,
-            trade_comment=config.advanced.trade_comment
+            trade_comment=config.advanced.trade_comment,
+            persistence=self.persistence
         )
         self.risk_manager = RiskManager(
             connector=self.connector,
-            risk_config=config.risk
+            risk_config=config.risk,
+            persistence=self.persistence
         )
         self.trade_manager = TradeManager(
             connector=self.connector,
@@ -92,14 +99,26 @@ class TradingBot:
             self.logger.error("Failed to connect to MT5")
             return False
 
-        # Load symbols from Market Watch
-        self.logger.info("Loading symbols from Market Watch...")
-        if not config.load_symbols_from_market_watch(self.connector):
-            self.logger.error("Failed to load symbols from Market Watch")
-            self.stop()
-            return False
+        # Load symbols from active.set file
+        self.logger.info("Loading symbols from active.set...")
+        if not config.load_symbols_from_active_set():
+            self.logger.warning("Failed to load symbols from active.set, loading from Market Watch")
+            # Load from Market Watch if active.set doesn't exist
+            if not config.load_symbols_from_market_watch(self.connector):
+                self.logger.error("Failed to load symbols from Market Watch")
+                self.stop()
+                return False
+            self.logger.info(f"Loaded {len(config.symbols)} symbols from Market Watch")
 
-        self.logger.info(f"Loaded {len(config.symbols)} symbols from Market Watch")
+            # Save to active.set for future use
+            from pathlib import Path
+            from src.utils.active_set_manager import ActiveSetManager
+
+            active_set_manager = ActiveSetManager()
+            active_set_manager.save_symbols(config.symbols)
+            self.logger.info(f"Saved {len(config.symbols)} symbols to active.set")
+        else:
+            self.logger.info(f"Loaded {len(config.symbols)} symbols from active.set")
 
         # Validate that we have symbols
         try:

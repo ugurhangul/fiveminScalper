@@ -90,14 +90,30 @@ class SymbolTracker:
     def _disable_symbol(self, reason: str):
         """
         Disable symbol trading.
-        
+
         Args:
             reason: Reason for disabling
         """
         self.is_disabled = True
         self.disabled_at = datetime.now(timezone.utc)
-        
-        self.logger.symbol_disabled(self.symbol, reason)
+
+        # Calculate re-enable date
+        reenable_date = self.disabled_at + timedelta(hours=self.config.cooling_period_hours)
+
+        # Prepare stats for logging
+        stats = {
+            'total_trades': self.stats.total_trades,
+            'wins': self.stats.winning_trades,
+            'losses': self.stats.losing_trades,
+            'win_rate': self.stats.win_rate,
+            'net_pnl': self.stats.net_profit,
+            'consecutive_losses': self.stats.consecutive_losses,
+            'cooling_days': self.config.cooling_period_hours / 24,
+            'reenable_date': reenable_date.strftime('%Y-%m-%d %H:%M:%S UTC')
+        }
+
+        # Log symbol disabled with stats
+        self.logger.symbol_disabled(self.symbol, reason, stats)
         self.logger.info(
             f"Symbol will be re-enabled after {self.config.cooling_period_hours} hours",
             self.symbol
@@ -123,13 +139,20 @@ class SymbolTracker:
     
     def _reenable_symbol(self):
         """Re-enable symbol after cooling period"""
+        # Prepare old stats for logging
+        old_stats = {
+            'total_trades': self.stats.total_trades,
+            'net_pnl': self.stats.net_profit,
+            'disable_reason': 'Performance criteria not met'
+        }
+
         self.is_disabled = False
         self.disabled_at = None
-        
+
         # Reset consecutive losses
         self.stats.consecutive_losses = 0
-        
-        self.logger.symbol_reenabled(self.symbol)
+
+        self.logger.symbol_reenabled(self.symbol, old_stats)
     
     def can_trade(self) -> bool:
         """

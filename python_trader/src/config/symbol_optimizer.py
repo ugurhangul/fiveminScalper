@@ -47,14 +47,16 @@ class SymbolOptimizer:
     }
     
     # Optimized parameters for each category
+    # Updated based on log analysis (2025-11-05) to eliminate "both strategies rejected" gaps
     CATEGORY_PARAMETERS = {
         SymbolCategory.MAJOR_FOREX: SymbolParameters(
             enable_false_breakout_strategy=True,
             enable_true_breakout_strategy=True,
-            breakout_volume_max=0.8,
-            reversal_volume_min=1.8,
-            true_breakout_volume_min=2.0,
-            continuation_volume_min=1.5,
+            # Data-driven: Avg gap 0.50-0.82x, widened to capture more opportunities
+            breakout_volume_max=0.85,  # Was 0.8, increased to capture 0.82x breakouts
+            reversal_volume_min=1.5,   # Was 1.8, lowered for better signal generation
+            true_breakout_volume_min=1.5,  # Was 2.0, lowered to reduce rejections
+            continuation_volume_min=1.3,   # Was 1.5, lowered for consistency
             volume_average_period=20,
             rsi_period=14,
             macd_fast=12,
@@ -68,10 +70,11 @@ class SymbolOptimizer:
         SymbolCategory.MINOR_FOREX: SymbolParameters(
             enable_false_breakout_strategy=True,
             enable_true_breakout_strategy=True,
-            breakout_volume_max=0.7,
-            reversal_volume_min=2.0,
-            true_breakout_volume_min=2.2,
-            continuation_volume_min=1.6,
+            # Data-driven: Avg gap 0.57-0.78x, widened to eliminate gaps
+            breakout_volume_max=0.90,  # Was 0.7, increased significantly
+            reversal_volume_min=1.5,   # Was 2.0, lowered
+            true_breakout_volume_min=1.5,  # Was 2.2, lowered significantly
+            continuation_volume_min=1.3,   # Was 1.6, lowered
             volume_average_period=25,
             rsi_period=14,
             macd_fast=12,
@@ -85,10 +88,11 @@ class SymbolOptimizer:
         SymbolCategory.EXOTIC_FOREX: SymbolParameters(
             enable_false_breakout_strategy=True,
             enable_true_breakout_strategy=True,
-            breakout_volume_max=0.6,
-            reversal_volume_min=2.5,
-            true_breakout_volume_min=2.8,
-            continuation_volume_min=2.0,
+            # Data-driven: Avg gap 0.80-1.03x, very wide range needs aggressive widening
+            breakout_volume_max=1.20,  # Was 0.6, DOUBLED to capture 1.03x breakouts
+            reversal_volume_min=1.5,   # Was 2.5, lowered significantly
+            true_breakout_volume_min=1.3,  # Was 2.8, lowered significantly
+            continuation_volume_min=1.2,   # Was 2.0, lowered
             volume_average_period=30,
             rsi_period=21,
             macd_fast=16,
@@ -102,10 +106,11 @@ class SymbolOptimizer:
         SymbolCategory.METALS: SymbolParameters(
             enable_false_breakout_strategy=True,
             enable_true_breakout_strategy=True,
-            breakout_volume_max=0.7,
-            reversal_volume_min=2.2,
-            true_breakout_volume_min=2.5,
-            continuation_volume_min=1.8,
+            # Data-driven: Avg gap 0.70-1.06x, wide range
+            breakout_volume_max=1.15,  # Was 0.7, increased significantly
+            reversal_volume_min=1.5,   # Was 2.2, lowered
+            true_breakout_volume_min=1.4,  # Was 2.5, lowered significantly
+            continuation_volume_min=1.3,   # Was 1.8, lowered
             volume_average_period=25,
             rsi_period=14,
             macd_fast=12,
@@ -119,10 +124,11 @@ class SymbolOptimizer:
         SymbolCategory.INDICES: SymbolParameters(
             enable_false_breakout_strategy=True,
             enable_true_breakout_strategy=True,
-            breakout_volume_max=0.8,
-            reversal_volume_min=1.8,
-            true_breakout_volume_min=2.0,
-            continuation_volume_min=1.5,
+            # Data-driven: Avg gap 0.32-0.69x, relatively tight
+            breakout_volume_max=0.75,  # Was 0.8, slightly lowered for precision
+            reversal_volume_min=1.4,   # Was 1.8, lowered
+            true_breakout_volume_min=1.3,  # Was 2.0, lowered
+            continuation_volume_min=1.2,   # Was 1.5, lowered
             volume_average_period=20,
             rsi_period=14,
             macd_fast=12,
@@ -136,10 +142,11 @@ class SymbolOptimizer:
         SymbolCategory.CRYPTO: SymbolParameters(
             enable_false_breakout_strategy=True,
             enable_true_breakout_strategy=True,
-            breakout_volume_max=0.5,
-            reversal_volume_min=3.0,
-            true_breakout_volume_min=3.5,
-            continuation_volume_min=2.5,
+            # Data-driven: Avg gap 0.51-1.12x, VERY wide range - crypto is volatile
+            breakout_volume_max=1.35,  # Was 0.5, TRIPLED to capture 1.12x breakouts
+            reversal_volume_min=1.5,   # Was 3.0, halved for more signals
+            true_breakout_volume_min=1.3,  # Was 3.5, significantly lowered
+            continuation_volume_min=1.2,   # Was 2.5, lowered
             volume_average_period=40,
             rsi_period=21,
             macd_fast=16,
@@ -153,17 +160,18 @@ class SymbolOptimizer:
         SymbolCategory.COMMODITIES: SymbolParameters(
             enable_false_breakout_strategy=True,
             enable_true_breakout_strategy=True,
-            breakout_volume_max=0.7,
-            reversal_volume_min=2.0,
-            true_breakout_volume_min=2.2,
-            continuation_volume_min=1.6,
+            # Data-driven: Avg gap 0.61-0.65x, tight range
+            breakout_volume_max=0.80,  # Was 0.7, increased slightly
+            reversal_volume_min=1.4,   # Was 2.0, lowered
+            true_breakout_volume_min=1.3,  # Was 2.2, lowered
+            continuation_volume_min=1.2,   # Was 1.6, lowered
             volume_average_period=25,
             rsi_period=14,
             macd_fast=12,
             macd_slow=26,
             macd_signal=9,
             divergence_lookback=25,
-             adaptive_loss_trigger=1,
+            adaptive_loss_trigger=1,
             adaptive_win_recovery=3,
             max_spread_percent=0.1  # Commodities: 0.1%
         )

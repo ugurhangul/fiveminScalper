@@ -10,3 +10,5 @@ python_trader/src/models/__pycache__/*
 python_trader/src/risk/__pycache__/*
 python_trader/src/strategy/__pycache__/*
 python_trader/src/utils/__pycache__/*
+/logs
+/python_trader/data

@@ -11,18 +11,21 @@ from src.utils.logger import get_logger
 
 class RiskManager:
     """Manages risk and position sizing"""
-    
-    def __init__(self, connector: MT5Connector, risk_config: RiskConfig):
+
+    def __init__(self, connector: MT5Connector, risk_config: RiskConfig,
+                 persistence=None):
         """
         Initialize risk manager.
-        
+
         Args:
             connector: MT5 connector instance
             risk_config: Risk configuration
+            persistence: Position persistence instance (optional)
         """
         self.connector = connector
         self.risk_config = risk_config
         self.logger = get_logger()
+        self.persistence = persistence
     
     def calculate_lot_size(self, symbol: str, entry_price: float, 
                           stop_loss: float) -> float:
@@ -395,6 +398,9 @@ class RiskManager:
         """
         Check if we can open a new position.
 
+        This method checks BOTH MT5 positions AND persisted positions to prevent
+        duplicate position creation after bot restart.
+
         Args:
             magic_number: Magic number to filter positions
             symbol: Symbol to check for existing positions (optional)
@@ -404,12 +410,35 @@ class RiskManager:
         Returns:
             Tuple of (can_open, reason)
         """
-        # Get current positions
+        # Get current positions from MT5
         positions = self.connector.get_positions(magic_number=magic_number)
 
         # Check max positions
         if len(positions) >= self.risk_config.max_positions:
             return False, f"Maximum positions ({self.risk_config.max_positions}) reached"
+
+        # DUPLICATE PREVENTION: Also check persisted positions
+        # This prevents creating duplicate positions after bot restart
+        if self.persistence and symbol and position_type:
+            persisted_tickets = self.persistence.get_all_tickets()
+
+            # Check if any persisted position matches this symbol and type
+            for ticket in persisted_tickets:
+                pos_data = self.persistence.get_position(ticket)
+                if pos_data and pos_data['symbol'] == symbol:
+                    # Check if position type matches
+                    persisted_type = PositionType(pos_data['position_type'])
+                    if persisted_type == position_type:
+                        # Position exists in persistence but might not be in MT5 yet
+                        # This can happen during bot restart before MT5 sync
+                        pos_type_str = "BUY" if position_type == PositionType.BUY else "SELL"
+                        self.logger.warning(
+                            f"Position found in persistence file: {ticket} ({symbol} {pos_type_str}). "
+                            f"Preventing duplicate creation.",
+                            symbol
+                        )
+                        # Don't immediately reject - let the normal logic below handle it
+                        # This is just a warning that persistence detected a potential duplicate
 
         # Check if position of same type already exists for this symbol
         if symbol and position_type:

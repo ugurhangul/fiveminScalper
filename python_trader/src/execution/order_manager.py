@@ -6,26 +6,32 @@ import MetaTrader5 as mt5
 from typing import Optional, Tuple
 from src.models.data_models import PositionType, TradeSignal
 from src.core.mt5_connector import MT5Connector
+from src.execution.position_persistence import PositionPersistence
 from src.utils.logger import get_logger
 
 
 class OrderManager:
     """Manages order execution and modification"""
-    
-    def __init__(self, connector: MT5Connector, magic_number: int, trade_comment: str):
+
+    def __init__(self, connector: MT5Connector, magic_number: int, trade_comment: str,
+                 persistence: Optional[PositionPersistence] = None):
         """
         Initialize order manager.
-        
+
         Args:
             connector: MT5 connector instance
             magic_number: Magic number for orders
             trade_comment: Comment for trades
+            persistence: Position persistence instance (optional)
         """
         self.connector = connector
         self.magic_number = magic_number
         self.trade_comment = trade_comment
         self.logger = get_logger()
         self.deviation = 10  # Price deviation in points
+
+        # Position persistence
+        self.persistence = persistence if persistence is not None else PositionPersistence()
     
     def normalize_price(self, symbol: str, price: float) -> float:
         """
@@ -86,30 +92,58 @@ class OrderManager:
 
         # Check if AutoTrading is enabled in terminal
         if not self.connector.is_autotrading_enabled():
-            self.logger.error(f"AutoTrading is DISABLED in MT5 terminal - Trade rejected", symbol)
+            self.logger.trade_error(
+                symbol=symbol,
+                error_type="AutoTrading Check",
+                error_message="AutoTrading is DISABLED in MT5 terminal",
+                context={"action": "Trade rejected - Enable AutoTrading in MT5"}
+            )
             return None
 
         # Check if trading is enabled for this symbol
         if not self.connector.is_trading_enabled(symbol):
-            self.logger.warning(f"Trading is disabled for {symbol} - Trade rejected", symbol)
+            self.logger.symbol_condition_warning(
+                symbol=symbol,
+                condition="Trading Disabled",
+                details="Trading is disabled for this symbol in MT5 - Trade rejected"
+            )
             return None
 
         # Check spread before executing (as percentage of price)
         current_spread_percent = self.connector.get_spread_percent(symbol)
         if current_spread_percent is None:
-            self.logger.error(f"Failed to get spread for {symbol}", symbol)
+            self.logger.trade_error(
+                symbol=symbol,
+                error_type="Spread Check",
+                error_message="Failed to get spread percentage",
+                context={"action": "Trade rejected"}
+            )
             return None
 
         # Also get spread in points for logging
         current_spread_points = self.connector.get_spread(symbol)
 
         if current_spread_percent > signal.max_spread_percent:
-            self.logger.warning(
-                f"Spread too high: {current_spread_percent:.3f}% ({current_spread_points:.1f} points) "
-                f"(max: {signal.max_spread_percent:.3f}%) - Trade rejected",
-                symbol
+            # Log spread rejection with detailed info
+            self.logger.spread_warning(
+                symbol=symbol,
+                current_spread_percent=current_spread_percent,
+                current_spread_points=current_spread_points,
+                threshold_percent=signal.max_spread_percent,
+                is_rejected=True
             )
             return None
+
+        # Check if spread is elevated but still acceptable (warning threshold at 80% of max)
+        warning_threshold = signal.max_spread_percent * 0.8
+        if current_spread_percent > warning_threshold:
+            self.logger.spread_warning(
+                symbol=symbol,
+                current_spread_percent=current_spread_percent,
+                current_spread_points=current_spread_points,
+                threshold_percent=signal.max_spread_percent,
+                is_rejected=False
+            )
 
         self.logger.debug(
             f"Spread check passed: {current_spread_percent:.3f}% ({current_spread_points:.1f} points) "
@@ -130,7 +164,15 @@ class OrderManager:
             price = self.connector.get_current_price(symbol, 'bid')
 
         if price is None:
-            self.logger.error(f"Failed to get current price for {symbol}", symbol)
+            self.logger.trade_error(
+                symbol=symbol,
+                error_type="Price Retrieval",
+                error_message="Failed to get current market price",
+                context={
+                    "order_type": "BUY" if signal.signal_type == PositionType.BUY else "SELL",
+                    "action": "Trade rejected"
+                }
+            )
             return None
 
         # Recalculate TP based on actual execution price (market price)
@@ -156,7 +198,12 @@ class OrderManager:
         # Get symbol info to validate stops
         symbol_info = self.connector.get_symbol_info(symbol)
         if symbol_info is None:
-            self.logger.error(f"Failed to get symbol info", symbol)
+            self.logger.trade_error(
+                symbol=symbol,
+                error_type="Symbol Info Retrieval",
+                error_message="Failed to get symbol information from MT5",
+                context={"action": "Trade rejected"}
+            )
             return None
 
         # Validate and adjust SL/TP to meet minimum stop level requirements
@@ -185,6 +232,7 @@ class OrderManager:
 
         # Generate informative trade comment
         trade_comment = self._generate_trade_comment(signal)
+        self.logger.info(f"Trade Comment: {trade_comment}", symbol)
 
         # Create order request
         request = {
@@ -205,15 +253,33 @@ class OrderManager:
         # Send order
         try:
             result = mt5.order_send(request)
-            
+
             if result is None:
-                self.logger.error(f"order_send failed, no result returned", symbol)
+                self.logger.trade_error(
+                    symbol=symbol,
+                    error_type="Trade Execution",
+                    error_message="order_send failed, no result returned from MT5",
+                    context={
+                        "order_type": signal.signal_type.value.upper(),
+                        "volume": volume,
+                        "price": price
+                    }
+                )
                 return None
-            
+
             if result.retcode != mt5.TRADE_RETCODE_DONE:
-                self.logger.error(
-                    f"Order failed: {result.retcode} - {result.comment}",
-                    symbol
+                self.logger.trade_error(
+                    symbol=symbol,
+                    error_type="Trade Execution",
+                    error_message=f"Order rejected by broker: {result.comment}",
+                    context={
+                        "retcode": result.retcode,
+                        "order_type": signal.signal_type.value.upper(),
+                        "volume": volume,
+                        "price": price,
+                        "sl": sl,
+                        "tp": tp
+                    }
                 )
                 return None
             
@@ -227,11 +293,40 @@ class OrderManager:
                 sl=sl,
                 tp=tp
             )
-            
+
+            # Add position to persistence
+            from src.models.data_models import PositionInfo
+            from datetime import datetime, timezone
+
+            position = PositionInfo(
+                ticket=result.order,
+                symbol=symbol,
+                position_type=signal.signal_type,
+                volume=volume,
+                open_price=result.price,
+                current_price=result.price,
+                sl=sl,
+                tp=tp,
+                profit=0.0,
+                open_time=datetime.now(timezone.utc),
+                magic_number=self.magic_number,
+                comment=trade_comment
+            )
+            self.persistence.add_position(position)
+
             return result.order
 
         except Exception as e:
-            self.logger.error(f"Error executing order: {e}", symbol)
+            self.logger.trade_error(
+                symbol=symbol,
+                error_type="Trade Execution",
+                error_message=f"Exception during order execution: {str(e)}",
+                context={
+                    "order_type": signal.signal_type.value.upper(),
+                    "volume": volume,
+                    "exception_type": type(e).__name__
+                }
+            )
             return None
 
     def _validate_stops(self, symbol: str, price: float, sl: float, tp: float,
@@ -442,9 +537,12 @@ class OrderManager:
                 f"Position {ticket} modified - SL: {new_sl:.5f}, TP: {new_tp:.5f}",
                 symbol
             )
-            
+
+            # Update position in persistence
+            self.persistence.update_position(ticket, sl=new_sl, tp=new_tp)
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Error modifying position {ticket}: {e}")
             return False
@@ -517,11 +615,14 @@ class OrderManager:
                     f"Close failed for position {ticket}: {result.retcode} - {result.comment}"
                 )
                 return False
-            
+
             self.logger.info(f"Position {ticket} closed at {price:.5f}", symbol)
-            
+
+            # Remove position from persistence
+            self.persistence.remove_position(ticket)
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Error closing position {ticket}: {e}")
             return False

@@ -3,9 +3,10 @@ Core strategy logic for false breakout detection.
 Ported from FMS_Strategy.mqh
 """
 from typing import Optional
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 from src.models.data_models import (
-    BreakoutState, FourHourCandle, CandleData, TradeSignal, 
+    BreakoutState, UnifiedBreakoutState, FourHourCandle, CandleData, TradeSignal,
     PositionType, SymbolParameters
 )
 from src.strategy.candle_processor import CandleProcessor
@@ -39,16 +40,27 @@ class StrategyEngine:
         self.connector = connector
         self.logger = get_logger()
 
-        # Breakout state tracking
+        # Unified breakout state tracking
+        self.unified_state = UnifiedBreakoutState()
+
+        # Legacy breakout state (kept for backward compatibility during migration)
         self.breakout_state = BreakoutState()
 
-        # Volume tracking
-        self.breakout_volume = 0
-        self.reversal_volume = 0
+        # Volume tracking - DEPRECATED (moved to UnifiedBreakoutState)
+        # Kept for backward compatibility during migration
+        self.false_breakout_volume = 0
+        self.false_reversal_volume = 0
+        self.true_breakout_volume = 0
+        self.true_continuation_volume = 0
     
     def check_for_signal(self) -> Optional[TradeSignal]:
         """
-        Check for trade signals on new 5M candle.
+        UNIFIED BREAKOUT DETECTION APPROACH
+
+        Stage 1: Detect breakout once (above 4H high OR below 4H low)
+        Stage 2: Classify for both strategies simultaneously based on volume
+        Stage 3: Wait for reversal (FALSE BREAKOUT) or continuation (TRUE BREAKOUT)
+        Stage 4: Generate signal when confirmations pass
 
         Returns:
             TradeSignal if signal detected, None otherwise
@@ -73,33 +85,391 @@ class StrategyEngine:
         if candle_5m is None:
             return None
 
-        # Check FALSE BREAKOUT strategies (if enabled)
-        if self.symbol_params.enable_false_breakout_strategy:
-            # Check for BUY signal (reversal from below)
-            buy_signal = self._check_buy_signal(candle_4h, candle_5m)
-            if buy_signal:
-                return buy_signal
+        # === STAGE 1: UNIFIED BREAKOUT DETECTION ===
+        self._detect_breakout(candle_4h, candle_5m)
 
-            # Check for SELL signal (reversal from above)
-            sell_signal = self._check_sell_signal(candle_4h, candle_5m)
-            if sell_signal:
-                return sell_signal
+        # === STAGE 2: STRATEGY CLASSIFICATION ===
+        # Classify which strategies can proceed based on volume
+        self._classify_strategies(candle_5m)
 
-        # Check TRUE BREAKOUT strategies (if enabled)
-        if self.symbol_params.enable_true_breakout_strategy:
-            # Check for TRUE BUY signal (continuation upward)
-            true_buy_signal = self._check_true_buy_signal(candle_4h, candle_5m)
-            if true_buy_signal:
-                return true_buy_signal
+        # === STAGE 3 & 4: CHECK FOR SIGNALS ===
+        # Check if any strategy has generated a signal
+        signal = self._check_all_strategies(candle_4h, candle_5m)
+        if signal:
+            return signal
 
-            # Check for TRUE SELL signal (continuation downward)
-            true_sell_signal = self._check_true_sell_signal(candle_4h, candle_5m)
-            if true_sell_signal:
-                return true_sell_signal
+        # === CLEANUP: Reset if both strategies rejected ===
+        if self.unified_state.both_strategies_rejected():
+            self.logger.info(">>> BOTH STRATEGIES REJECTED - Resetting <<<", self.symbol)
+            self.unified_state.reset_all()
 
         return None
-    
-    def _check_buy_signal(self, candle_4h: FourHourCandle, 
+
+    def _detect_breakout(self, candle_4h: FourHourCandle, candle_5m: CandleData):
+        """
+        STAGE 1: Unified breakout detection.
+
+        Detects when price breaks above 4H high or below 4H low.
+        Stores breakout volume WITHOUT checking confirmations yet.
+
+        Also checks for breakout timeout - if a breakout is older than the configured
+        timeout period (default 24 candles = 2 hours), it's considered stale and reset.
+        """
+        # Check for timeout on existing breakouts
+        self._check_breakout_timeout(candle_5m)
+
+        # Check for breakout ABOVE 4H high
+        if not self.unified_state.breakout_above_detected:
+            if candle_5m.close > candle_4h.high:
+                self.unified_state.breakout_above_detected = True
+                self.unified_state.breakout_above_volume = candle_5m.volume
+                self.unified_state.breakout_above_time = candle_5m.time
+
+                self.logger.info("=" * 60, self.symbol)
+                self.logger.info(">>> BREAKOUT ABOVE 4H HIGH DETECTED <<<", self.symbol)
+                self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
+                self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
+                self.logger.info(f"Breakout Volume: {candle_5m.volume}", self.symbol)
+                self.logger.info("=" * 60, self.symbol)
+
+        # Check for breakout BELOW 4H low
+        if not self.unified_state.breakout_below_detected:
+            if candle_5m.close < candle_4h.low:
+                self.unified_state.breakout_below_detected = True
+                self.unified_state.breakout_below_volume = candle_5m.volume
+                self.unified_state.breakout_below_time = candle_5m.time
+
+                self.logger.info("=" * 60, self.symbol)
+                self.logger.info(">>> BREAKOUT BELOW 4H LOW DETECTED <<<", self.symbol)
+                self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
+                self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
+                self.logger.info(f"Breakout Volume: {candle_5m.volume}", self.symbol)
+                self.logger.info("=" * 60, self.symbol)
+
+    def _check_breakout_timeout(self, candle_5m: CandleData):
+        """
+        Check if existing breakouts have timed out.
+
+        Breakouts older than breakout_timeout_candles (default 24 = 2 hours) are
+        considered stale and reset to prevent trading on old momentum.
+
+        Args:
+            candle_5m: Current 5M candle with timestamp
+        """
+        timeout_minutes = self.symbol_params.breakout_timeout_candles * 5  # Convert candles to minutes
+        timeout_delta = timedelta(minutes=timeout_minutes)
+
+        # Check breakout ABOVE timeout
+        if self.unified_state.breakout_above_detected and self.unified_state.breakout_above_time:
+            age = candle_5m.time - self.unified_state.breakout_above_time
+            if age > timeout_delta:
+                age_minutes = int(age.total_seconds() / 60)
+                self.logger.info("=" * 60, self.symbol)
+                self.logger.info(">>> BREAKOUT ABOVE TIMEOUT - Resetting <<<", self.symbol)
+                self.logger.info(f"Breakout Age: {age_minutes} minutes ({age_minutes // 60}h {age_minutes % 60}m)", self.symbol)
+                self.logger.info(f"Timeout Limit: {timeout_minutes} minutes ({self.symbol_params.breakout_timeout_candles} candles)", self.symbol)
+                self.logger.info("Reason: Breakout too old, momentum lost", self.symbol)
+                self.logger.info("=" * 60, self.symbol)
+                self.unified_state.reset_breakout_above()
+
+        # Check breakout BELOW timeout
+        if self.unified_state.breakout_below_detected and self.unified_state.breakout_below_time:
+            age = candle_5m.time - self.unified_state.breakout_below_time
+            if age > timeout_delta:
+                age_minutes = int(age.total_seconds() / 60)
+                self.logger.info("=" * 60, self.symbol)
+                self.logger.info(">>> BREAKOUT BELOW TIMEOUT - Resetting <<<", self.symbol)
+                self.logger.info(f"Breakout Age: {age_minutes} minutes ({age_minutes // 60}h {age_minutes % 60}m)", self.symbol)
+                self.logger.info(f"Timeout Limit: {timeout_minutes} minutes ({self.symbol_params.breakout_timeout_candles} candles)", self.symbol)
+                self.logger.info("Reason: Breakout too old, momentum lost", self.symbol)
+                self.logger.info("=" * 60, self.symbol)
+                self.unified_state.reset_breakout_below()
+
+    def _classify_strategies(self, candle_5m: CandleData):
+        """
+        STAGE 2: Strategy classification and confirmation tracking.
+
+        Determines which strategies can proceed and tracks confirmations:
+        - FALSE BREAKOUT: Prefers LOW breakout volume
+        - TRUE BREAKOUT: Prefers HIGH breakout volume
+
+        Confirmations are TRACKED but NOT REQUIRED for trade execution.
+        This allows analysis of which confirmations correlate with winning trades.
+        """
+        # Get 5M candles for average volume calculation
+        df = self.candle_processor.get_5m_candles(count=100)
+        if df is None:
+            return
+
+        # Calculate average volume
+        avg_volume = self.indicators.calculate_average_volume(
+            df['tick_volume'],
+            self.symbol_params.volume_average_period
+        )
+
+        # === CLASSIFY BREAKOUT ABOVE (TRUE BUY / FALSE SELL) ===
+        if self.unified_state.breakout_above_detected and not self.unified_state.true_buy_qualified and not self.unified_state.false_sell_qualified:
+            volume = self.unified_state.breakout_above_volume
+
+            # Check if qualifies for TRUE BUY (high volume continuation)
+            if self.symbol_params.enable_true_breakout_strategy:
+                # Check volume confirmation (tracked but not required)
+                is_high_volume = self.indicators.is_true_breakout_volume_high(
+                    volume, avg_volume,
+                    self.symbol_params.true_breakout_volume_min,
+                    self.symbol
+                )
+
+                # Always qualify, but track volume confirmation status
+                self.unified_state.true_buy_qualified = True
+                self.unified_state.true_buy_volume_ok = is_high_volume
+
+                if is_high_volume:
+                    self.logger.info(">>> TRUE BUY QUALIFIED (High Volume ✓) <<<", self.symbol)
+                else:
+                    self.logger.info(">>> TRUE BUY QUALIFIED (Volume not high ✗) <<<", self.symbol)
+                self.logger.info("Waiting for continuation above 4H High...", self.symbol)
+
+            # Check if qualifies for FALSE SELL (low volume reversal)
+            if self.symbol_params.enable_false_breakout_strategy:
+                # Check volume confirmation (tracked but not required)
+                is_low_volume = self.indicators.is_breakout_volume_low(
+                    volume, avg_volume,
+                    self.symbol_params.breakout_volume_max,
+                    self.symbol
+                )
+
+                # Check divergence (tracked but not required)
+                divergence_ok = self._check_sell_divergence()
+
+                # Always qualify, but track confirmation status
+                self.unified_state.false_sell_qualified = True
+                self.unified_state.false_sell_volume_ok = is_low_volume
+                self.unified_state.false_sell_divergence_ok = divergence_ok
+
+                # Log confirmation status
+                vol_status = "✓" if is_low_volume else "✗"
+                div_status = "✓" if divergence_ok else "✗"
+                self.logger.info(f">>> FALSE SELL QUALIFIED (Low Vol {vol_status}, Div {div_status}) <<<", self.symbol)
+                self.logger.info("Waiting for reversal back below 4H High...", self.symbol)
+
+        # === CLASSIFY BREAKOUT BELOW (TRUE SELL / FALSE BUY) ===
+        if self.unified_state.breakout_below_detected and not self.unified_state.true_sell_qualified and not self.unified_state.false_buy_qualified:
+            volume = self.unified_state.breakout_below_volume
+
+            # Check if qualifies for TRUE SELL (high volume continuation)
+            if self.symbol_params.enable_true_breakout_strategy:
+                # Check volume confirmation (tracked but not required)
+                is_high_volume = self.indicators.is_true_breakout_volume_high(
+                    volume, avg_volume,
+                    self.symbol_params.true_breakout_volume_min,
+                    self.symbol
+                )
+
+                # Always qualify, but track volume confirmation status
+                self.unified_state.true_sell_qualified = True
+                self.unified_state.true_sell_volume_ok = is_high_volume
+
+                if is_high_volume:
+                    self.logger.info(">>> TRUE SELL QUALIFIED (High Volume ✓) <<<", self.symbol)
+                else:
+                    self.logger.info(">>> TRUE SELL QUALIFIED (Volume not high ✗) <<<", self.symbol)
+                self.logger.info("Waiting for continuation below 4H Low...", self.symbol)
+
+            # Check if qualifies for FALSE BUY (low volume reversal)
+            if self.symbol_params.enable_false_breakout_strategy:
+                # Check volume confirmation (tracked but not required)
+                is_low_volume = self.indicators.is_breakout_volume_low(
+                    volume, avg_volume,
+                    self.symbol_params.breakout_volume_max,
+                    self.symbol
+                )
+
+                # Check divergence (tracked but not required)
+                divergence_ok = self._check_buy_divergence()
+
+                # Always qualify, but track confirmation status
+                self.unified_state.false_buy_qualified = True
+                self.unified_state.false_buy_volume_ok = is_low_volume
+                self.unified_state.false_buy_divergence_ok = divergence_ok
+
+                # Log confirmation status
+                vol_status = "✓" if is_low_volume else "✗"
+                div_status = "✓" if divergence_ok else "✗"
+                self.logger.info(f">>> FALSE BUY QUALIFIED (Low Vol {vol_status}, Div {div_status}) <<<", self.symbol)
+                self.logger.info("Waiting for reversal back above 4H Low...", self.symbol)
+
+    def _check_all_strategies(self, candle_4h: FourHourCandle, candle_5m: CandleData) -> Optional[TradeSignal]:
+        """
+        STAGE 3 & 4: Check all qualified strategies for signals.
+
+        Checks for:
+        - FALSE BUY: Reversal back above 4H low (if qualified)
+        - FALSE SELL: Reversal back below 4H high (if qualified)
+        - TRUE BUY: Continuation above 4H high (if qualified)
+        - TRUE SELL: Continuation below 4H low (if qualified)
+        """
+        # === FALSE BUY: Check for reversal back above 4H low ===
+        if self.unified_state.false_buy_qualified and not self.unified_state.false_buy_reversal_detected:
+            if candle_5m.close > candle_4h.low:
+                self.unified_state.false_buy_reversal_detected = True
+                self.unified_state.false_buy_reversal_volume = candle_5m.volume
+
+                # Check reversal volume (tracked but not required)
+                reversal_volume_ok = self._check_unified_reversal_volume(candle_5m.volume)
+                self.unified_state.false_buy_reversal_volume_ok = reversal_volume_ok
+
+                vol_status = "✓" if reversal_volume_ok else "✗"
+                self.logger.info(f">>> FALSE BUY REVERSAL DETECTED (Rev Vol {vol_status}) <<<", self.symbol)
+                self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
+                self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
+                self.logger.info(f"Reversal Volume: {candle_5m.volume}", self.symbol)
+
+                # Always generate signal (confirmations tracked in signal)
+                self.logger.info("*** FALSE BUY SIGNAL GENERATED ***", self.symbol)
+                return self._generate_buy_signal(candle_4h, candle_5m)
+
+        # === FALSE SELL: Check for reversal back below 4H high ===
+        if self.unified_state.false_sell_qualified and not self.unified_state.false_sell_reversal_detected:
+            if candle_5m.close < candle_4h.high:
+                self.unified_state.false_sell_reversal_detected = True
+                self.unified_state.false_sell_reversal_volume = candle_5m.volume
+
+                # Check reversal volume (tracked but not required)
+                reversal_volume_ok = self._check_unified_reversal_volume(candle_5m.volume)
+                self.unified_state.false_sell_reversal_volume_ok = reversal_volume_ok
+
+                vol_status = "✓" if reversal_volume_ok else "✗"
+                self.logger.info(f">>> FALSE SELL REVERSAL DETECTED (Rev Vol {vol_status}) <<<", self.symbol)
+                self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
+                self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
+                self.logger.info(f"Reversal Volume: {candle_5m.volume}", self.symbol)
+
+                # Always generate signal (confirmations tracked in signal)
+                self.logger.info("*** FALSE SELL SIGNAL GENERATED ***", self.symbol)
+                return self._generate_sell_signal(candle_4h, candle_5m)
+
+        # === TRUE BUY: Check for retest and continuation above 4H high ===
+        if self.unified_state.true_buy_qualified and not self.unified_state.true_buy_continuation_detected:
+            # First, check if we need to detect a retest
+            if not self.unified_state.true_buy_retest_detected:
+                # Retest: Price pulls back close to 4H high but stays above
+                # We consider it a retest if price comes within a small range of the breakout level
+                retest_range = candle_4h.high * 0.0005  # 0.05% range for retest detection
+                if candle_4h.high <= candle_5m.close <= (candle_4h.high + retest_range):
+                    self.unified_state.true_buy_retest_detected = True
+                    self.unified_state.true_buy_retest_ok = True
+                    self.logger.info(f">>> TRUE BUY RETEST DETECTED (Retest ✓) <<<", self.symbol)
+                    self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
+                    self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
+                    self.logger.info(f"Retest Range: {retest_range:.5f}", self.symbol)
+                    self.logger.info("Waiting for continuation above 4H High...", self.symbol)
+
+            # After retest (or if retest not required), check for continuation
+            # Only generate signal if retest occurred OR if price moved significantly above breakout
+            if self.unified_state.true_buy_retest_detected or candle_5m.close > (candle_4h.high * 1.001):
+                if candle_5m.close > candle_4h.high:
+                    self.unified_state.true_buy_continuation_detected = True
+                    self.unified_state.true_buy_continuation_volume = candle_5m.volume
+
+                    # Check continuation volume (tracked but not required)
+                    continuation_volume_ok = self._check_unified_continuation_volume(candle_5m.volume)
+                    self.unified_state.true_buy_continuation_volume_ok = continuation_volume_ok
+
+                    # Track retest status
+                    retest_status = "✓" if self.unified_state.true_buy_retest_ok else "✗"
+                    vol_status = "✓" if continuation_volume_ok else "✗"
+
+                    self.logger.info(f">>> TRUE BUY CONTINUATION DETECTED (Retest {retest_status}, Cont Vol {vol_status}) <<<", self.symbol)
+                    self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
+                    self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
+                    self.logger.info(f"Continuation Volume: {candle_5m.volume}", self.symbol)
+
+                    # Always generate signal (confirmations tracked in signal)
+                    self.logger.info("*** TRUE BUY SIGNAL GENERATED ***", self.symbol)
+                    return self._generate_true_buy_signal(candle_4h, candle_5m)
+
+        # === TRUE SELL: Check for retest and continuation below 4H low ===
+        if self.unified_state.true_sell_qualified and not self.unified_state.true_sell_continuation_detected:
+            # First, check if we need to detect a retest
+            if not self.unified_state.true_sell_retest_detected:
+                # Retest: Price pulls back close to 4H low but stays below
+                # We consider it a retest if price comes within a small range of the breakout level
+                retest_range = candle_4h.low * 0.0005  # 0.05% range for retest detection
+                if (candle_4h.low - retest_range) <= candle_5m.close <= candle_4h.low:
+                    self.unified_state.true_sell_retest_detected = True
+                    self.unified_state.true_sell_retest_ok = True
+                    self.logger.info(f">>> TRUE SELL RETEST DETECTED (Retest ✓) <<<", self.symbol)
+                    self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
+                    self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
+                    self.logger.info(f"Retest Range: {retest_range:.5f}", self.symbol)
+                    self.logger.info("Waiting for continuation below 4H Low...", self.symbol)
+
+            # After retest (or if retest not required), check for continuation
+            # Only generate signal if retest occurred OR if price moved significantly below breakout
+            if self.unified_state.true_sell_retest_detected or candle_5m.close < (candle_4h.low * 0.999):
+                if candle_5m.close < candle_4h.low:
+                    self.unified_state.true_sell_continuation_detected = True
+                    self.unified_state.true_sell_continuation_volume = candle_5m.volume
+
+                    # Check continuation volume (tracked but not required)
+                    continuation_volume_ok = self._check_unified_continuation_volume(candle_5m.volume)
+                    self.unified_state.true_sell_continuation_volume_ok = continuation_volume_ok
+
+                    # Track retest status
+                    retest_status = "✓" if self.unified_state.true_sell_retest_ok else "✗"
+                    vol_status = "✓" if continuation_volume_ok else "✗"
+
+                    self.logger.info(f">>> TRUE SELL CONTINUATION DETECTED (Retest {retest_status}, Cont Vol {vol_status}) <<<", self.symbol)
+                    self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
+                    self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
+                    self.logger.info(f"Continuation Volume: {candle_5m.volume}", self.symbol)
+
+                    # Always generate signal (confirmations tracked in signal)
+                    self.logger.info("*** TRUE SELL SIGNAL GENERATED ***", self.symbol)
+                    return self._generate_true_sell_signal(candle_4h, candle_5m)
+
+        return None
+
+    def _check_unified_reversal_volume(self, volume: int) -> bool:
+        """Check if reversal volume is HIGH (for FALSE BREAKOUT)"""
+        df = self.candle_processor.get_5m_candles(count=100)
+        if df is None:
+            return False
+
+        avg_volume = self.indicators.calculate_average_volume(
+            df['tick_volume'],
+            self.symbol_params.volume_average_period
+        )
+
+        return self.indicators.is_reversal_volume_high(
+            volume, avg_volume,
+            self.symbol_params.reversal_volume_min,
+            self.symbol
+        )
+
+    def _check_unified_continuation_volume(self, volume: int) -> bool:
+        """Check if continuation volume is HIGH (for TRUE BREAKOUT)"""
+        df = self.candle_processor.get_5m_candles(count=100)
+        if df is None:
+            return False
+
+        avg_volume = self.indicators.calculate_average_volume(
+            df['tick_volume'],
+            self.symbol_params.volume_average_period
+        )
+
+        return self.indicators.is_continuation_volume_high(
+            volume, avg_volume,
+            self.symbol_params.continuation_volume_min,
+            self.symbol
+        )
+
+    # ========================================================================
+    # LEGACY METHODS - Kept for backward compatibility during migration
+    # ========================================================================
+
+    def _check_buy_signal(self, candle_4h: FourHourCandle,
                          candle_5m: CandleData) -> Optional[TradeSignal]:
         """
         Check for BUY signal (false breakout below 4H low).
@@ -120,20 +490,20 @@ class StrategyEngine:
         # Step 1: Check for breakout (5M close below 4H low)
         if not self.breakout_state.buy_breakout_confirmed:
             if candle_5m.close < candle_4h.low:
-                # Store breakout volume
-                self.breakout_volume = candle_5m.volume
+                # Store breakout volume (FALSE BREAKOUT specific)
+                self.false_breakout_volume = candle_5m.volume
 
                 # Log breakout detection
                 self.logger.info(">>> BUY BREAKOUT DETECTED <<<", self.symbol)
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
-                self.logger.info(f"Breakout Volume: {self.breakout_volume}", self.symbol)
+                self.logger.info(f"Breakout Volume: {self.false_breakout_volume}", self.symbol)
 
                 # Check BREAKOUT confirmations (volume LOW + divergence)
                 # This matches MQL5: confirmations are checked at BREAKOUT stage, not reversal!
                 if not self._check_buy_breakout_confirmations():
                     self.logger.info(">>> BUY BREAKOUT CONFIRMATIONS FAILED - Resetting <<<", self.symbol)
-                    self.reset_state()
+                    self.breakout_state.reset_buy()
                     return None
 
                 # Breakout confirmed - set flag and wait for reversal
@@ -142,24 +512,24 @@ class StrategyEngine:
                 self.logger.info("Waiting for reversal back above 4H Low...", self.symbol)
 
             return None
-        
+
         # Step 2: Check for reversal (5M close back above 4H low)
         if self.breakout_state.buy_breakout_confirmed and not self.breakout_state.buy_reversal_confirmed:
             if candle_5m.close > candle_4h.low:
-                # Store reversal volume
-                self.reversal_volume = candle_5m.volume
+                # Store reversal volume (FALSE BREAKOUT specific)
+                self.false_reversal_volume = candle_5m.volume
 
                 # Log reversal detection
                 self.logger.info(">>> BUY REVERSAL DETECTED <<<", self.symbol)
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
-                self.logger.info(f"Reversal Volume: {self.reversal_volume}", self.symbol)
+                self.logger.info(f"Reversal Volume: {self.false_reversal_volume}", self.symbol)
 
                 # Check REVERSAL confirmations (volume HIGH)
                 # This matches MQL5: reversal volume is checked at REVERSAL stage
                 if not self._check_buy_reversal_confirmations():
                     self.logger.info(">>> BUY REVERSAL CONFIRMATIONS FAILED - Resetting <<<", self.symbol)
-                    self.reset_state()
+                    self.breakout_state.reset_buy()
                     return None
 
                 # All confirmations passed
@@ -193,20 +563,20 @@ class StrategyEngine:
         # Step 1: Check for breakout (5M close above 4H high)
         if not self.breakout_state.sell_breakout_confirmed:
             if candle_5m.close > candle_4h.high:
-                # Store breakout volume
-                self.breakout_volume = candle_5m.volume
+                # Store breakout volume (FALSE BREAKOUT specific)
+                self.false_breakout_volume = candle_5m.volume
 
                 # Log breakout detection
                 self.logger.info(">>> SELL BREAKOUT DETECTED <<<", self.symbol)
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
-                self.logger.info(f"Breakout Volume: {self.breakout_volume}", self.symbol)
+                self.logger.info(f"Breakout Volume: {self.false_breakout_volume}", self.symbol)
 
                 # Check BREAKOUT confirmations (volume LOW + divergence)
                 # This matches MQL5: confirmations are checked at BREAKOUT stage, not reversal!
                 if not self._check_sell_breakout_confirmations():
                     self.logger.info(">>> SELL BREAKOUT CONFIRMATIONS FAILED - Resetting <<<", self.symbol)
-                    self.reset_state()
+                    self.breakout_state.reset_sell()
                     return None
 
                 # Breakout confirmed - set flag and wait for reversal
@@ -215,24 +585,24 @@ class StrategyEngine:
                 self.logger.info("Waiting for reversal back below 4H High...", self.symbol)
 
             return None
-        
+
         # Step 2: Check for reversal (5M close back below 4H high)
         if self.breakout_state.sell_breakout_confirmed and not self.breakout_state.sell_reversal_confirmed:
             if candle_5m.close < candle_4h.high:
-                # Store reversal volume
-                self.reversal_volume = candle_5m.volume
+                # Store reversal volume (FALSE BREAKOUT specific)
+                self.false_reversal_volume = candle_5m.volume
 
                 # Log reversal detection
                 self.logger.info(">>> SELL REVERSAL DETECTED <<<", self.symbol)
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
-                self.logger.info(f"Reversal Volume: {self.reversal_volume}", self.symbol)
+                self.logger.info(f"Reversal Volume: {self.false_reversal_volume}", self.symbol)
 
                 # Check REVERSAL confirmations (volume HIGH)
                 # This matches MQL5: reversal volume is checked at REVERSAL stage
                 if not self._check_sell_reversal_confirmations():
                     self.logger.info(">>> SELL REVERSAL CONFIRMATIONS FAILED - Resetting <<<", self.symbol)
-                    self.reset_state()
+                    self.breakout_state.reset_sell()
                     return None
 
                 # All confirmations passed
@@ -308,7 +678,7 @@ class StrategyEngine:
         return True
 
     def _check_breakout_volume(self) -> bool:
-        """Check breakout volume is LOW"""
+        """Check breakout volume is LOW (for FALSE BREAKOUT strategy)"""
         # Get 5M candles for average volume
         df = self.candle_processor.get_5m_candles(count=100)
         if df is None:
@@ -320,16 +690,16 @@ class StrategyEngine:
             self.symbol_params.volume_average_period
         )
 
-        # Check breakout volume is LOW
+        # Check breakout volume is LOW (using FALSE BREAKOUT volume)
         return self.indicators.is_breakout_volume_low(
-            self.breakout_volume,
+            self.false_breakout_volume,
             avg_volume,
             self.symbol_params.breakout_volume_max,
             self.symbol
         )
 
     def _check_reversal_volume(self) -> bool:
-        """Check reversal volume is HIGH"""
+        """Check reversal volume is HIGH (for FALSE BREAKOUT strategy)"""
         # Get 5M candles for average volume
         df = self.candle_processor.get_5m_candles(count=100)
         if df is None:
@@ -341,9 +711,9 @@ class StrategyEngine:
             self.symbol_params.volume_average_period
         )
 
-        # Check reversal volume is HIGH
+        # Check reversal volume is HIGH (using FALSE BREAKOUT volume)
         return self.indicators.is_reversal_volume_high(
-            self.reversal_volume,
+            self.false_reversal_volume,
             avg_volume,
             self.symbol_params.reversal_volume_min,
             self.symbol
@@ -397,14 +767,14 @@ class StrategyEngine:
         # Step 1: Check for breakout (5M close above 4H high)
         if not self.breakout_state.true_buy_breakout_confirmed:
             if candle_5m.close > candle_4h.high:
-                # Store breakout volume
-                self.breakout_volume = candle_5m.volume
+                # Store breakout volume (TRUE BREAKOUT specific)
+                self.true_breakout_volume = candle_5m.volume
 
                 # Log breakout detection
                 self.logger.info(">>> TRUE BUY BREAKOUT DETECTED <<<", self.symbol)
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
-                self.logger.info(f"Breakout Volume: {self.breakout_volume}", self.symbol)
+                self.logger.info(f"Breakout Volume: {self.true_breakout_volume}", self.symbol)
 
                 # Check BREAKOUT confirmations (volume HIGH)
                 if not self._check_true_buy_breakout_confirmations():
@@ -422,14 +792,14 @@ class StrategyEngine:
         # Step 2: Check for continuation (5M close still above 4H high)
         if self.breakout_state.true_buy_breakout_confirmed and not self.breakout_state.true_buy_continuation_confirmed:
             if candle_5m.close > candle_4h.high:
-                # Store continuation volume
-                self.reversal_volume = candle_5m.volume
+                # Store continuation volume (TRUE BREAKOUT specific)
+                self.true_continuation_volume = candle_5m.volume
 
                 # Log continuation detection
                 self.logger.info(">>> TRUE BUY CONTINUATION DETECTED <<<", self.symbol)
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
-                self.logger.info(f"Continuation Volume: {self.reversal_volume}", self.symbol)
+                self.logger.info(f"Continuation Volume: {self.true_continuation_volume}", self.symbol)
 
                 # Check CONTINUATION confirmations (volume HIGH)
                 if not self._check_true_buy_continuation_confirmations():
@@ -476,7 +846,7 @@ class StrategyEngine:
         return True
 
     def _check_true_breakout_volume(self) -> bool:
-        """Check true breakout volume is HIGH"""
+        """Check true breakout volume is HIGH (for TRUE BREAKOUT strategy)"""
         # Get 5M candles for average volume
         df = self.candle_processor.get_5m_candles(count=100)
         if df is None:
@@ -488,16 +858,16 @@ class StrategyEngine:
             self.symbol_params.volume_average_period
         )
 
-        # Check breakout volume is HIGH
+        # Check breakout volume is HIGH (using TRUE BREAKOUT volume)
         return self.indicators.is_true_breakout_volume_high(
-            self.breakout_volume,
+            self.true_breakout_volume,
             avg_volume,
             self.symbol_params.true_breakout_volume_min,
             self.symbol
         )
 
     def _check_continuation_volume(self) -> bool:
-        """Check continuation volume is HIGH"""
+        """Check continuation volume is HIGH (for TRUE BREAKOUT strategy)"""
         # Get 5M candles for average volume
         df = self.candle_processor.get_5m_candles(count=100)
         if df is None:
@@ -509,9 +879,9 @@ class StrategyEngine:
             self.symbol_params.volume_average_period
         )
 
-        # Check continuation volume is HIGH
+        # Check continuation volume is HIGH (using TRUE BREAKOUT volume)
         return self.indicators.is_continuation_volume_high(
-            self.reversal_volume,
+            self.true_continuation_volume,
             avg_volume,
             self.symbol_params.continuation_volume_min,
             self.symbol
@@ -537,14 +907,14 @@ class StrategyEngine:
         # Step 1: Check for breakout (5M close below 4H low)
         if not self.breakout_state.true_sell_breakout_confirmed:
             if candle_5m.close < candle_4h.low:
-                # Store breakout volume
-                self.breakout_volume = candle_5m.volume
+                # Store breakout volume (TRUE BREAKOUT specific)
+                self.true_breakout_volume = candle_5m.volume
 
                 # Log breakout detection
                 self.logger.info(">>> TRUE SELL BREAKOUT DETECTED <<<", self.symbol)
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
-                self.logger.info(f"Breakout Volume: {self.breakout_volume}", self.symbol)
+                self.logger.info(f"Breakout Volume: {self.true_breakout_volume}", self.symbol)
 
                 # Check BREAKOUT confirmations (volume HIGH)
                 if not self._check_true_sell_breakout_confirmations():
@@ -562,14 +932,14 @@ class StrategyEngine:
         # Step 2: Check for continuation (5M close still below 4H low)
         if self.breakout_state.true_sell_breakout_confirmed and not self.breakout_state.true_sell_continuation_confirmed:
             if candle_5m.close < candle_4h.low:
-                # Store continuation volume
-                self.reversal_volume = candle_5m.volume
+                # Store continuation volume (TRUE BREAKOUT specific)
+                self.true_continuation_volume = candle_5m.volume
 
                 # Log continuation detection
                 self.logger.info(">>> TRUE SELL CONTINUATION DETECTED <<<", self.symbol)
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
-                self.logger.info(f"Continuation Volume: {self.reversal_volume}", self.symbol)
+                self.logger.info(f"Continuation Volume: {self.true_continuation_volume}", self.symbol)
 
                 # Check CONTINUATION confirmations (volume HIGH)
                 if not self._check_true_sell_continuation_confirmations():
@@ -707,17 +1077,13 @@ class StrategyEngine:
         reward = risk * self.strategy_config.risk_reward_ratio
         take_profit = entry_price + reward
 
-        # Determine if confirmations were met
-        volume_confirmed = False
-        divergence_confirmed = False
+        # Track confirmations from unified state (always checked, not required)
+        # Volume confirmed = both breakout volume LOW and reversal volume HIGH
+        volume_confirmed = (self.unified_state.false_buy_volume_ok and
+                          self.unified_state.false_buy_reversal_volume_ok)
 
-        if self.symbol_params.volume_confirmation_enabled:
-            # Both breakout and reversal volume must be confirmed
-            volume_confirmed = True  # If we got here, volume checks passed
-
-        if self.symbol_params.divergence_confirmation_enabled:
-            # Divergence was checked at breakout stage
-            divergence_confirmed = True  # If we got here, divergence check passed
+        # Divergence confirmed = divergence was present at breakout
+        divergence_confirmed = self.unified_state.false_buy_divergence_ok
 
         signal = TradeSignal(
             symbol=self.symbol,
@@ -802,17 +1168,13 @@ class StrategyEngine:
         reward = risk * self.strategy_config.risk_reward_ratio
         take_profit = entry_price - reward
 
-        # Determine if confirmations were met
-        volume_confirmed = False
-        divergence_confirmed = False
+        # Track confirmations from unified state (always checked, not required)
+        # Volume confirmed = both breakout volume LOW and reversal volume HIGH
+        volume_confirmed = (self.unified_state.false_sell_volume_ok and
+                          self.unified_state.false_sell_reversal_volume_ok)
 
-        if self.symbol_params.volume_confirmation_enabled:
-            # Both breakout and reversal volume must be confirmed
-            volume_confirmed = True  # If we got here, volume checks passed
-
-        if self.symbol_params.divergence_confirmation_enabled:
-            # Divergence was checked at breakout stage
-            divergence_confirmed = True  # If we got here, divergence check passed
+        # Divergence confirmed = divergence was present at breakout
+        divergence_confirmed = self.unified_state.false_sell_divergence_ok
 
         signal = TradeSignal(
             symbol=self.symbol,
@@ -880,10 +1242,11 @@ class StrategyEngine:
         reward = risk * self.strategy_config.risk_reward_ratio
         take_profit = entry_price + reward
 
-        # Determine if confirmations were met
-        volume_confirmed = False
-        if self.symbol_params.volume_confirmation_enabled:
-            volume_confirmed = True  # If we got here, volume checks passed
+        # Track confirmations from unified state (always checked, not required)
+        # Volume confirmed = breakout volume HIGH + retest occurred + continuation volume HIGH
+        volume_confirmed = (self.unified_state.true_buy_volume_ok and
+                          self.unified_state.true_buy_retest_ok and
+                          self.unified_state.true_buy_continuation_volume_ok)
 
         signal = TradeSignal(
             symbol=self.symbol,
@@ -951,10 +1314,11 @@ class StrategyEngine:
         reward = risk * self.strategy_config.risk_reward_ratio
         take_profit = entry_price - reward
 
-        # Determine if confirmations were met
-        volume_confirmed = False
-        if self.symbol_params.volume_confirmation_enabled:
-            volume_confirmed = True  # If we got here, volume checks passed
+        # Track confirmations from unified state (always checked, not required)
+        # Volume confirmed = breakout volume HIGH + retest occurred + continuation volume HIGH
+        volume_confirmed = (self.unified_state.true_sell_volume_ok and
+                          self.unified_state.true_sell_retest_ok and
+                          self.unified_state.true_sell_continuation_volume_ok)
 
         signal = TradeSignal(
             symbol=self.symbol,
@@ -1054,12 +1418,21 @@ class StrategyEngine:
         return highest_high
 
     def reset_state(self):
-        """Reset all breakout states (both false and true breakout strategies)"""
+        """Reset all breakout states (unified + legacy)"""
+        # Reset unified state
+        self.unified_state.reset_all()
+
+        # Reset legacy state (for backward compatibility)
         self.breakout_state.reset_buy()
         self.breakout_state.reset_sell()
         self.breakout_state.reset_true_buy()
         self.breakout_state.reset_true_sell()
-        self.breakout_volume = 0
-        self.reversal_volume = 0
+
+        # Reset legacy volume tracking
+        self.false_breakout_volume = 0
+        self.false_reversal_volume = 0
+        self.true_breakout_volume = 0
+        self.true_continuation_volume = 0
+
         self.logger.info("Strategy state reset", self.symbol)
 
