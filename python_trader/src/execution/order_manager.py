@@ -455,16 +455,16 @@ class OrderManager:
             self.logger.warning(f"No filling mode supported (flags: {filling_mode}), defaulting to FOK")
             return mt5.ORDER_FILLING_FOK
     
-    def modify_position(self, ticket: int, sl: Optional[float] = None, 
+    def modify_position(self, ticket: int, sl: Optional[float] = None,
                        tp: Optional[float] = None) -> bool:
         """
         Modify position SL/TP.
-        
+
         Args:
             ticket: Position ticket
             sl: New stop loss (None to keep current)
             tp: New take profit (None to keep current)
-            
+
         Returns:
             True if successful, False otherwise
         """
@@ -474,18 +474,28 @@ class OrderManager:
             if not position or len(position) == 0:
                 self.logger.error(f"Position {ticket} not found")
                 return False
-            
+
             pos = position[0]
             symbol = pos.symbol
-            
+
             # Use current values if not specified
             new_sl = sl if sl is not None else pos.sl
             new_tp = tp if tp is not None else pos.tp
-            
+
             # Normalize prices
             new_sl = self.normalize_price(symbol, new_sl) if new_sl > 0 else 0
             new_tp = self.normalize_price(symbol, new_tp) if new_tp > 0 else 0
-            
+
+            # Check if values actually changed after normalization
+            # MT5 returns error 10025 "No changes" if SL/TP are identical
+            if new_sl == pos.sl and new_tp == pos.tp:
+                self.logger.debug(
+                    f"Position {ticket} modification skipped - no changes after normalization "
+                    f"(SL: {new_sl:.5f}, TP: {new_tp:.5f})",
+                    symbol
+                )
+                return True  # Return True since position is already in desired state
+
             # Create modification request
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
@@ -494,22 +504,22 @@ class OrderManager:
                 "sl": new_sl,
                 "tp": new_tp,
             }
-            
+
             # Send modification
             result = mt5.order_send(request)
-            
+
             if result is None:
                 self.logger.error(f"Modify failed for position {ticket}, no result")
                 return False
-            
+
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 self.logger.error(
                     f"Modify failed for position {ticket}: {result.retcode} - {result.comment}"
                 )
                 return False
-            
+
             self.logger.debug(
-                f"Position {ticket} modified - SL: {new_sl:.5f}, TP: {new_tp:.5f}",
+                f"Position {ticket} modified - SL: {new_sl:.5f} (was {pos.sl:.5f}), TP: {new_tp:.5f} (was {pos.tp:.5f})",
                 symbol
             )
 

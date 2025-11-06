@@ -100,8 +100,6 @@ class TechnicalIndicators:
                 self.logger.warning("ATR calculation returned NaN")
                 return None
 
-            self.logger.debug(f"ATR({period}): {current_atr:.5f}")
-
             return float(current_atr)
 
         except Exception as e:
