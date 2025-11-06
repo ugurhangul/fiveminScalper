@@ -89,15 +89,21 @@ class TradeManager:
     def manage_positions(self, positions: List[PositionInfo]):
         """
         Manage all open positions.
-        
+
         Args:
             positions: List of open positions
         """
+        # Skip position management during cooldown
+        # The order_manager will handle cooldown checks, but we can skip
+        # the entire loop to avoid unnecessary processing
+        if self.order_manager.cooldown.is_in_cooldown():
+            return
+
         for pos in positions:
             # Check breakeven
             if self.use_breakeven and pos.ticket not in self.breakeven_positions:
                 self._check_breakeven(pos)
-            
+
             # Check trailing stop
             if self.trailing_config.use_trailing_stop:
                 self._check_trailing_stop(pos)
@@ -105,20 +111,20 @@ class TradeManager:
     def _check_breakeven(self, pos: PositionInfo):
         """
         Check if position should be moved to breakeven.
-        
+
         Args:
             pos: Position info
         """
         # Check if position has reached breakeven trigger
         if pos.current_rr >= self.breakeven_trigger_rr:
             # Move SL to breakeven (entry price)
-            success = self.order_manager.modify_position(
+            result = self.order_manager.modify_position(
                 ticket=pos.ticket,
                 sl=pos.open_price,
                 tp=pos.tp
             )
-            
-            if success:
+
+            if result == True:
                 self.breakeven_positions.add(pos.ticket)
                 self.logger.info(
                     f"Position {pos.ticket} moved to BREAKEVEN at {pos.open_price:.5f}",
@@ -126,6 +132,12 @@ class TradeManager:
                 )
                 self.logger.info(
                     f"Triggered at {pos.current_rr:.2f} R:R (trigger: {self.breakeven_trigger_rr})",
+                    pos.symbol
+                )
+            elif result == "RETRY":
+                # Server temporarily blocked - will retry next tick
+                self.logger.debug(
+                    f"Breakeven move temporarily blocked for position {pos.ticket} - will retry",
                     pos.symbol
                 )
     
@@ -158,13 +170,13 @@ class TradeManager:
             self.trailing_positions.add(pos.ticket)
 
             # Remove TP when trailing stop is activated
-            success = self.order_manager.modify_position(
+            result = self.order_manager.modify_position(
                 ticket=pos.ticket,
                 sl=pos.sl,
                 tp=0.0  # Remove TP
             )
 
-            if success:
+            if result == True:
                 self.logger.info(
                     f"Fixed trailing stop ACTIVATED for position {pos.ticket}",
                     pos.symbol
@@ -173,12 +185,19 @@ class TradeManager:
                     f"Take Profit REMOVED - position will be managed by trailing stop",
                     pos.symbol
                 )
-            else:
-                self.logger.warning(
-                    f"Failed to remove TP when activating trailing stop for position {pos.ticket}",
+            elif result == "RETRY":
+                # Server temporarily blocked - keep in tracking and retry next tick
+                self.logger.debug(
+                    f"Fixed trailing activation temporarily blocked for position {pos.ticket} - will retry",
                     pos.symbol
                 )
-                # Remove from tracking if we couldn't modify the position
+                return
+            else:
+                self.logger.warning(
+                    f"Failed to activate fixed trailing stop for position {pos.ticket} - permanent error",
+                    pos.symbol
+                )
+                # Remove from tracking only for permanent errors
                 self.trailing_positions.discard(pos.ticket)
                 return
 
@@ -197,19 +216,25 @@ class TradeManager:
 
             # Only move SL up, never down
             if new_sl > pos.sl:
-                success = self.order_manager.modify_position(
+                result = self.order_manager.modify_position(
                     ticket=pos.ticket,
                     sl=new_sl,
                     tp=0.0  # Keep TP removed while trailing
                 )
 
-                if success:
+                if result == True:
                     self.logger.info(
                         f"Fixed trailing stop updated for BUY position {pos.ticket}",
                         pos.symbol
                     )
                     self.logger.info(
                         f"New SL: {new_sl:.5f} (was {pos.sl:.5f})",
+                        pos.symbol
+                    )
+                elif result == "RETRY":
+                    # Server temporarily blocked - will retry next tick
+                    self.logger.debug(
+                        f"Fixed trailing update temporarily blocked for BUY position {pos.ticket} - will retry",
                         pos.symbol
                     )
 
@@ -219,19 +244,25 @@ class TradeManager:
 
             # Only move SL down, never up
             if new_sl < pos.sl or pos.sl == 0:
-                success = self.order_manager.modify_position(
+                result = self.order_manager.modify_position(
                     ticket=pos.ticket,
                     sl=new_sl,
                     tp=0.0  # Keep TP removed while trailing
                 )
 
-                if success:
+                if result == True:
                     self.logger.info(
                         f"Fixed trailing stop updated for SELL position {pos.ticket}",
                         pos.symbol
                     )
                     self.logger.info(
                         f"New SL: {new_sl:.5f} (was {pos.sl:.5f})",
+                        pos.symbol
+                    )
+                elif result == "RETRY":
+                    # Server temporarily blocked - will retry next tick
+                    self.logger.debug(
+                        f"Fixed trailing update temporarily blocked for SELL position {pos.ticket} - will retry",
                         pos.symbol
                     )
 
@@ -300,14 +331,14 @@ class TradeManager:
             else:
                 initial_sl = pos.open_price + atr_distance
 
-            # Remove TP when trailing stop is activated
-            success = self.order_manager.modify_position(
+            # Set initial SL and remove TP when trailing stop is activated
+            result = self.order_manager.modify_position(
                 ticket=pos.ticket,
-                sl=pos.sl,
+                sl=initial_sl,
                 tp=0.0  # Remove TP
             )
 
-            if success:
+            if result == True:
                 self.logger.info(
                     f"ATR trailing stop ACTIVATED for position {pos.ticket}",
                     pos.symbol
@@ -328,12 +359,20 @@ class TradeManager:
                     f"Take Profit REMOVED - position will be managed by trailing stop",
                     pos.symbol
                 )
-            else:
-                self.logger.warning(
-                    f"Failed to remove TP when activating ATR trailing stop for position {pos.ticket}",
+            elif result == "RETRY":
+                # Server temporarily blocked modification - keep in tracking and retry next tick
+                self.logger.debug(
+                    f"ATR trailing activation temporarily blocked for position {pos.ticket} - will retry",
                     pos.symbol
                 )
-                # Remove from tracking if we couldn't modify the position
+                # Keep position in tracking, will retry on next tick
+                return
+            else:
+                self.logger.warning(
+                    f"Failed to activate ATR trailing stop for position {pos.ticket} - permanent error",
+                    pos.symbol
+                )
+                # Remove from tracking only for permanent errors
                 self.trailing_positions.discard(pos.ticket)
                 del self.atr_trailing_data[pos.ticket]
                 return
@@ -352,13 +391,13 @@ class TradeManager:
 
             # Only move SL up, never down
             if new_sl > pos.sl:
-                success = self.order_manager.modify_position(
+                result = self.order_manager.modify_position(
                     ticket=pos.ticket,
                     sl=new_sl,
                     tp=0.0  # Keep TP removed while trailing
                 )
 
-                if success:
+                if result == True:
                     self.logger.info(
                         f"ATR trailing stop updated for BUY position {pos.ticket}",
                         pos.symbol
@@ -369,6 +408,12 @@ class TradeManager:
                     )
                     self.logger.info(
                         f"New SL: {new_sl:.5f} (was {pos.sl:.5f}) | Distance in points: {atr_distance/point:.1f}",
+                        pos.symbol
+                    )
+                elif result == "RETRY":
+                    # Server temporarily blocked - will retry next tick
+                    self.logger.debug(
+                        f"ATR trailing update temporarily blocked for BUY position {pos.ticket} - will retry",
                         pos.symbol
                     )
 
@@ -383,13 +428,13 @@ class TradeManager:
 
             # Only move SL down, never up
             if new_sl < pos.sl or pos.sl == 0:
-                success = self.order_manager.modify_position(
+                result = self.order_manager.modify_position(
                     ticket=pos.ticket,
                     sl=new_sl,
                     tp=0.0  # Keep TP removed while trailing
                 )
 
-                if success:
+                if result == True:
                     self.logger.info(
                         f"ATR trailing stop updated for SELL position {pos.ticket}",
                         pos.symbol
@@ -400,6 +445,12 @@ class TradeManager:
                     )
                     self.logger.info(
                         f"New SL: {new_sl:.5f} (was {pos.sl:.5f}) | Distance in points: {atr_distance/point:.1f}",
+                        pos.symbol
+                    )
+                elif result == "RETRY":
+                    # Server temporarily blocked - will retry next tick
+                    self.logger.debug(
+                        f"ATR trailing update temporarily blocked for SELL position {pos.ticket} - will retry",
                         pos.symbol
                     )
     

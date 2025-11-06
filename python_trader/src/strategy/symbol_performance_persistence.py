@@ -6,16 +6,20 @@ This module provides:
 2. Thread-safe file access
 3. Automatic backup of corrupted files
 4. Per-symbol performance tracking across restarts
+5. Stats reconstruction from MT5 history when empty
 """
 import json
 import os
 import threading
-from typing import Dict, Optional
-from datetime import datetime
+from typing import Dict, Optional, TYPE_CHECKING
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.models.data_models import SymbolStats
 from src.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from src.core.mt5_connector import MT5Connector
 
 
 class SymbolPerformancePersistence:
@@ -63,9 +67,10 @@ class SymbolPerformancePersistence:
                 self.logger.error(f"Corrupted symbol stats file: {e}")
                 self.logger.warning("Starting with empty stats cache")
                 self.stats_cache = {}
-                # Backup corrupted file
+                # Backup corrupted file with timestamp
                 if self.stats_file.exists():
-                    backup_path = self.stats_file.with_suffix('.json.corrupted')
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    backup_path = self.stats_file.with_suffix(f'.json.corrupted.{timestamp}')
                     self.stats_file.rename(backup_path)
                     self.logger.info(f"Corrupted file backed up to: {backup_path}")
                     
@@ -176,6 +181,145 @@ class SymbolPerformancePersistence:
             
             self.logger.debug(f"Loaded stats for {symbol}")
             return stats
+
+    def construct_stats_from_mt5_history(self, symbol: str, connector: 'MT5Connector',
+                                         magic_number: int, days_back: int = 30) -> Optional[SymbolStats]:
+        """
+        Construct symbol stats from MT5 trade history.
+
+        This method reads closed trades from MT5 history and reconstructs the stats
+        as if they had been tracked from the beginning. Useful when:
+        - Starting to track a symbol that already has trade history
+        - Stats file was lost or corrupted
+        - Migrating from another system
+
+        Args:
+            symbol: Symbol name
+            connector: MT5 connector instance
+            magic_number: Magic number to filter trades
+            days_back: Number of days to look back in history (default: 30)
+
+        Returns:
+            SymbolStats object constructed from history, or None if no history found
+        """
+        if not connector.is_connected:
+            self.logger.error("MT5 not connected, cannot construct stats from history")
+            return None
+
+        try:
+            import MetaTrader5 as mt5
+
+            # Calculate date range
+            to_date = datetime.now()
+            from_date = to_date - timedelta(days=days_back)
+
+            self.logger.info(f"Constructing stats for {symbol} from MT5 history ({days_back} days back)")
+
+            # Get all deals in the date range
+            deals = mt5.history_deals_get(from_date, to_date)
+
+            if deals is None or len(deals) == 0:
+                self.logger.info(f"No history deals found for {symbol}")
+                return None
+
+            # Filter deals for this symbol and magic number
+            # We only care about OUT deals (position closures)
+            closed_trades = []
+
+            for deal in deals:
+                # Filter by symbol
+                if deal.symbol != symbol:
+                    continue
+
+                # Filter by magic number
+                if deal.magic != magic_number:
+                    continue
+
+                # Only process OUT deals (position closures)
+                if deal.entry != mt5.DEAL_ENTRY_OUT:
+                    continue
+
+                # Store the deal info
+                closed_trades.append({
+                    'position_id': deal.position_id,
+                    'profit': deal.profit,
+                    'time': datetime.fromtimestamp(deal.time)
+                })
+
+            if not closed_trades:
+                self.logger.info(f"No closed trades found for {symbol} with magic number {magic_number}")
+                return None
+
+            # Sort by time to process in chronological order
+            closed_trades.sort(key=lambda x: x['time'])
+
+            self.logger.info(f"Found {len(closed_trades)} closed trades for {symbol}")
+
+            # Initialize stats
+            stats = SymbolStats()
+            stats.week_start_time = self._get_current_week_start()
+
+            # Track peak equity for drawdown calculation
+            current_equity = 0.0
+
+            # Process each trade
+            for trade in closed_trades:
+                profit = trade['profit']
+
+                # Update trade counts
+                stats.total_trades += 1
+
+                if profit > 0:
+                    stats.winning_trades += 1
+                    stats.total_profit += profit
+                    stats.consecutive_losses = 0
+                    stats.consecutive_wins += 1
+                else:
+                    stats.losing_trades += 1
+                    stats.total_loss += abs(profit)
+                    stats.consecutive_losses += 1
+                    stats.consecutive_wins = 0
+
+                # Update equity and drawdown
+                current_equity += profit
+
+                if current_equity > stats.peak_equity:
+                    stats.peak_equity = current_equity
+                    stats.current_drawdown = 0.0
+                else:
+                    stats.current_drawdown = stats.peak_equity - current_equity
+                    if stats.current_drawdown > stats.max_drawdown:
+                        stats.max_drawdown = stats.current_drawdown
+
+            # Log constructed stats
+            self.logger.info(f"Constructed stats for {symbol}:")
+            self.logger.info(f"  Total trades: {stats.total_trades}")
+            self.logger.info(f"  Win rate: {stats.win_rate:.1f}%")
+            self.logger.info(f"  Net P/L: ${stats.net_profit:.2f}")
+            self.logger.info(f"  Consecutive losses: {stats.consecutive_losses}")
+            self.logger.info(f"  Max drawdown: {stats.max_drawdown_percent:.2f}%")
+
+            return stats
+
+        except Exception as e:
+            self.logger.error(f"Error constructing stats from MT5 history for {symbol}: {e}")
+            return None
+
+    def _get_current_week_start(self) -> datetime:
+        """
+        Get the start of the current week (Monday 00:00 UTC).
+
+        Returns:
+            Datetime of current week start
+        """
+        from datetime import timezone
+
+        now = datetime.now(timezone.utc)
+        # Get days since Monday (0 = Monday, 6 = Sunday)
+        days_since_monday = now.weekday()
+        # Calculate Monday 00:00 UTC
+        week_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
+        return week_start
     
     def delete_symbol_stats(self, symbol: str):
         """

@@ -316,12 +316,23 @@ class TradingController:
         Args:
             ticket: Position ticket
         """
-        # Note: In a real implementation, we would query MT5 history
-        # to get the symbol and profit. For now, we'll just log it.
-        self.logger.info(f"Position {ticket} closed (detected by monitor)")
+        # Query MT5 history to get symbol and profit
+        position_info = self.connector.get_closed_position_info(ticket)
 
-        # TODO: Query MT5 history to get symbol and profit
-        # Then call strategy.on_position_closed(ticket, profit)
+        if position_info is None:
+            self.logger.warning(f"Could not find closed position info for ticket {ticket}")
+            return
+
+        symbol, profit = position_info
+
+        self.logger.info(f"Position {ticket} closed: {symbol} | Profit: ${profit:.2f}")
+
+        # Find the strategy for this symbol and notify it
+        if symbol in self.strategies:
+            strategy = self.strategies[symbol]
+            strategy.on_position_closed(ticket, profit)
+        else:
+            self.logger.warning(f"No strategy found for symbol {symbol} (ticket {ticket})")
     
     def stop(self):
         """Stop all trading"""

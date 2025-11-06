@@ -17,6 +17,7 @@ class SymbolCategory(Enum):
     INDICES = "indices"
     CRYPTO = "crypto"
     COMMODITIES = "commodities"
+    STOCKS = "stocks"
     UNKNOWN = "unknown"
 
 

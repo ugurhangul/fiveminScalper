@@ -445,7 +445,7 @@ class MultiRangeStrategyEngine:
                 self.logger.info(f"Confirmation Close: {candle_breakout.close:.5f}", self.symbol)
                 self.logger.info(f"Reference Low: {candle_ref.low:.5f}", self.symbol)
                 self.logger.info(f"*** FALSE BUY SIGNAL GENERATED [{range_id}] ***", self.symbol)
-                return self._generate_buy_signal(range_id, candle_ref, candle_breakout)
+                return self._generate_buy_signal(range_id, candle_ref, candle_breakout, is_true_breakout=False)
             else:
                 # Reversal failed - price went back below reference low
                 self.logger.info(f">>> FALSE BUY REVERSAL FAILED [{range_id}] - Price back below reference low <<<", self.symbol)
@@ -483,7 +483,7 @@ class MultiRangeStrategyEngine:
                 self.logger.info(f"Confirmation Close: {candle_breakout.close:.5f}", self.symbol)
                 self.logger.info(f"Reference High: {candle_ref.high:.5f}", self.symbol)
                 self.logger.info(f"*** FALSE SELL SIGNAL GENERATED [{range_id}] ***", self.symbol)
-                return self._generate_sell_signal(range_id, candle_ref, candle_breakout)
+                return self._generate_sell_signal(range_id, candle_ref, candle_breakout, is_true_breakout=False)
             else:
                 # Reversal failed - price went back above reference high
                 self.logger.info(f">>> FALSE SELL REVERSAL FAILED [{range_id}] - Price back above reference high <<<", self.symbol)
@@ -524,7 +524,7 @@ class MultiRangeStrategyEngine:
                     self.logger.info(f"Continuation Volume: {candle_breakout.volume}", self.symbol)
 
                     self.logger.info(f"*** TRUE BUY SIGNAL GENERATED [{range_id}] ***", self.symbol)
-                    return self._generate_buy_signal(range_id, candle_ref, candle_breakout)
+                    return self._generate_buy_signal(range_id, candle_ref, candle_breakout, is_true_breakout=True)
 
         # === TRUE SELL: Check for retest and continuation ===
         if state.true_sell_qualified:
@@ -556,7 +556,7 @@ class MultiRangeStrategyEngine:
                     self.logger.info(f"Continuation Volume: {candle_breakout.volume}", self.symbol)
 
                     self.logger.info(f"*** TRUE SELL SIGNAL GENERATED [{range_id}] ***", self.symbol)
-                    return self._generate_sell_signal(range_id, candle_ref, candle_breakout)
+                    return self._generate_sell_signal(range_id, candle_ref, candle_breakout, is_true_breakout=True)
 
         return None
 
@@ -622,14 +622,163 @@ class MultiRangeStrategyEngine:
             self.symbol
         )
 
+    def _find_lowest_low_in_pattern(self, range_id: str, reference_low: float) -> Optional[float]:
+        """
+        Find the LOWEST LOW among the last 10 confirmation candles.
+        Uses the appropriate timeframe based on range_id:
+        - 4H_5M: Uses M5 candles
+        - 15M_1M: Uses M1 candles
+
+        Args:
+            range_id: Range identifier (e.g., "4H_5M", "15M_1M")
+            reference_low: The reference candle's low price (for logging only)
+
+        Returns:
+            Lowest low price, or None if no valid candles found
+        """
+        # Get last 10 confirmation candles for this range
+        df = self.candle_processor.get_breakout_candles(range_id, count=10)
+        if df is None or len(df) == 0:
+            return None
+
+        # Find the LOWEST low among ALL candles (no filter needed)
+        lowest_low = df['low'].min()
+
+        if lowest_low is not None and not pd.isna(lowest_low):
+            self.logger.info(f"Found lowest low in pattern [{range_id}]: {lowest_low:.5f} (ref low: {reference_low:.5f})", self.symbol)
+            return float(lowest_low)
+
+        return None
+
+    def _find_highest_high_in_pattern(self, range_id: str, reference_high: float) -> Optional[float]:
+        """
+        Find the HIGHEST HIGH among the last 10 confirmation candles.
+        Uses the appropriate timeframe based on range_id:
+        - 4H_5M: Uses M5 candles
+        - 15M_1M: Uses M1 candles
+
+        Args:
+            range_id: Range identifier (e.g., "4H_5M", "15M_1M")
+            reference_high: The reference candle's high price (for logging only)
+
+        Returns:
+            Highest high price, or None if no valid candles found
+        """
+        # Get last 10 confirmation candles for this range
+        df = self.candle_processor.get_breakout_candles(range_id, count=10)
+        if df is None or len(df) == 0:
+            return None
+
+        # Find the HIGHEST high among ALL candles (no filter needed)
+        highest_high = df['high'].max()
+
+        if highest_high is not None and not pd.isna(highest_high):
+            self.logger.info(f"Found highest high in pattern [{range_id}]: {highest_high:.5f} (ref high: {reference_high:.5f})", self.symbol)
+            return float(highest_high)
+
+        return None
+
+    def _calculate_sl_offset(self, reference_price: float) -> float:
+        """
+        Calculate stop loss offset based on configuration.
+        Matches the main StrategyEngine logic.
+
+        Args:
+            reference_price: The reference price (lowest_low for BUY, highest_high for SELL)
+
+        Returns:
+            Stop loss offset in price units
+        """
+        if self.strategy_config.use_point_based_sl and self.connector is not None:
+            # Point-based calculation (recommended)
+            symbol_info = self.connector.get_symbol_info(self.symbol)
+            if symbol_info is not None:
+                point = symbol_info['point']
+                # Convert points to price offset
+                sl_offset = self.strategy_config.stop_loss_offset_points * point
+
+                self.logger.debug(
+                    f"SL offset (point-based): {self.strategy_config.stop_loss_offset_points} points = {sl_offset:.5f}",
+                    self.symbol
+                )
+                return sl_offset
+            else:
+                self.logger.warning(
+                    "Failed to get symbol info for point-based SL, falling back to percentage",
+                    self.symbol
+                )
+
+        # Fallback to percentage-based calculation
+        sl_offset = reference_price * (self.strategy_config.stop_loss_offset_percent / 100.0)
+        self.logger.debug(
+            f"SL offset (percentage-based): {self.strategy_config.stop_loss_offset_percent}% = {sl_offset:.5f}",
+            self.symbol
+        )
+        return sl_offset
+
     def _generate_buy_signal(self, range_id: str, candle_ref: ReferenceCandle,
-                            candle_breakout: CandleData) -> TradeSignal:
-        """Generate BUY signal for a specific range."""
-        # Calculate stop loss and take profit
-        sl = candle_ref.low
+                            candle_breakout: CandleData, is_true_breakout: bool = False) -> TradeSignal:
+        """Generate BUY signal for a specific range.
+
+        Args:
+            range_id: Range identifier
+            candle_ref: Reference candle
+            candle_breakout: Breakout candle
+            is_true_breakout: True if this is a true breakout (continuation), False if false breakout (reversal)
+        """
+        # Find the LOWEST LOW among the last 10 candles that closed BELOW reference low
+        # This matches the main StrategyEngine logic
+        lowest_low = self._find_lowest_low_in_pattern(range_id, candle_ref.low)
+
+        if lowest_low is None:
+            self.logger.warning(f"No valid lowest low found for BUY signal [{range_id}]", self.symbol)
+            lowest_low = candle_ref.low  # Fallback to reference low
+
+        # Entry: Will use current ASK price at execution
         entry = candle_breakout.close
+
+        # Stop Loss: Below the LOWEST LOW (same logic for both TRUE and FALSE strategies)
+        # Use point-based or percentage-based calculation
+        sl_offset = self._calculate_sl_offset(lowest_low)
+
+        # Add spread to SL to account for bid-ask spread
+        # For BUY: Entry at ASK, SL triggered when BID hits SL
+        # So we need to widen SL by spread amount
+        spread_price = 0.0
+        if self.connector is not None:
+            symbol_info = self.connector.get_symbol_info(self.symbol)
+            if symbol_info is not None:
+                spread_points = self.connector.get_spread(self.symbol)
+                if spread_points is not None:
+                    point = symbol_info['point']
+                    spread_price = spread_points * point
+                    self.logger.debug(
+                        f"Adding spread to BUY SL [{range_id}]: {spread_points:.1f} points = {spread_price:.5f}",
+                        self.symbol
+                    )
+
+        sl = lowest_low - sl_offset - spread_price
+
+        # Take Profit: Based on R:R ratio
+        # Note: TP will be recalculated in order_manager using actual execution price
         risk = entry - sl
         tp = entry + (risk * self.strategy_config.risk_reward_ratio)
+
+        # Get state for this range to track confirmations
+        state = self.multi_range_state.get_state(range_id)
+
+        # Determine confirmation status based on strategy type
+        if is_true_breakout:
+            # TRUE BREAKOUT: Volume confirmed = breakout volume HIGH + retest occurred + continuation volume HIGH
+            volume_confirmed = (state.true_buy_volume_ok and
+                              state.true_buy_retest_ok and
+                              state.true_buy_continuation_volume_ok)
+            divergence_confirmed = False  # Not used for true breakouts
+        else:
+            # FALSE BREAKOUT: Volume confirmed = breakout volume LOW + reversal volume HIGH
+            volume_confirmed = (state.false_buy_volume_ok and
+                              state.false_buy_reversal_volume_ok)
+            divergence_confirmed = state.false_buy_divergence_ok
 
         return TradeSignal(
             symbol=self.symbol,
@@ -640,18 +789,76 @@ class MultiRangeStrategyEngine:
             lot_size=0.0,  # Will be calculated by risk manager
             timestamp=candle_breakout.time,
             range_id=range_id,
-            reason=f"Breakout strategy - Range: {range_id}",
-            max_spread_percent=self.symbol_params.max_spread_percent
+            reason=f"{'True' if is_true_breakout else 'False'} breakout strategy - Range: {range_id}",
+            max_spread_percent=self.symbol_params.max_spread_percent,
+            is_true_breakout=is_true_breakout,
+            volume_confirmed=volume_confirmed,
+            divergence_confirmed=divergence_confirmed
         )
 
     def _generate_sell_signal(self, range_id: str, candle_ref: ReferenceCandle,
-                             candle_breakout: CandleData) -> TradeSignal:
-        """Generate SELL signal for a specific range."""
-        # Calculate stop loss and take profit
-        sl = candle_ref.high
+                             candle_breakout: CandleData, is_true_breakout: bool = False) -> TradeSignal:
+        """Generate SELL signal for a specific range.
+
+        Args:
+            range_id: Range identifier
+            candle_ref: Reference candle
+            candle_breakout: Breakout candle
+            is_true_breakout: True if this is a true breakout (continuation), False if false breakout (reversal)
+        """
+        # Find the HIGHEST HIGH among the last 10 candles that closed ABOVE reference high
+        # This matches the main StrategyEngine logic
+        highest_high = self._find_highest_high_in_pattern(range_id, candle_ref.high)
+
+        if highest_high is None:
+            self.logger.warning(f"No valid highest high found for SELL signal [{range_id}]", self.symbol)
+            highest_high = candle_ref.high  # Fallback to reference high
+
+        # Entry: Will use current BID price at execution
         entry = candle_breakout.close
+
+        # Stop Loss: Above the HIGHEST HIGH (same logic for both TRUE and FALSE strategies)
+        # Use point-based or percentage-based calculation
+        sl_offset = self._calculate_sl_offset(highest_high)
+
+        # Add spread to SL to account for bid-ask spread
+        # For SELL: Entry at BID, SL triggered when ASK hits SL
+        # So we need to widen SL by spread amount
+        spread_price = 0.0
+        if self.connector is not None:
+            symbol_info = self.connector.get_symbol_info(self.symbol)
+            if symbol_info is not None:
+                spread_points = self.connector.get_spread(self.symbol)
+                if spread_points is not None:
+                    point = symbol_info['point']
+                    spread_price = spread_points * point
+                    self.logger.debug(
+                        f"Adding spread to SELL SL [{range_id}]: {spread_points:.1f} points = {spread_price:.5f}",
+                        self.symbol
+                    )
+
+        sl = highest_high + sl_offset + spread_price
+
+        # Take Profit: Based on R:R ratio
+        # Note: TP will be recalculated in order_manager using actual execution price
         risk = sl - entry
         tp = entry - (risk * self.strategy_config.risk_reward_ratio)
+
+        # Get state for this range to track confirmations
+        state = self.multi_range_state.get_state(range_id)
+
+        # Determine confirmation status based on strategy type
+        if is_true_breakout:
+            # TRUE BREAKOUT: Volume confirmed = breakout volume HIGH + retest occurred + continuation volume HIGH
+            volume_confirmed = (state.true_sell_volume_ok and
+                              state.true_sell_retest_ok and
+                              state.true_sell_continuation_volume_ok)
+            divergence_confirmed = False  # Not used for true breakouts
+        else:
+            # FALSE BREAKOUT: Volume confirmed = breakout volume LOW + reversal volume HIGH
+            volume_confirmed = (state.false_sell_volume_ok and
+                              state.false_sell_reversal_volume_ok)
+            divergence_confirmed = state.false_sell_divergence_ok
 
         return TradeSignal(
             symbol=self.symbol,
@@ -662,8 +869,11 @@ class MultiRangeStrategyEngine:
             lot_size=0.0,  # Will be calculated by risk manager
             timestamp=candle_breakout.time,
             range_id=range_id,
-            reason=f"Breakout strategy - Range: {range_id}",
-            max_spread_percent=self.symbol_params.max_spread_percent
+            reason=f"{'True' if is_true_breakout else 'False'} breakout strategy - Range: {range_id}",
+            max_spread_percent=self.symbol_params.max_spread_percent,
+            is_true_breakout=is_true_breakout,
+            volume_confirmed=volume_confirmed,
+            divergence_confirmed=divergence_confirmed
         )
 
     def reset_range(self, range_id: str):

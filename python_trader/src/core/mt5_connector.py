@@ -211,6 +211,7 @@ class MT5Connector:
                 'currency_base': info.currency_base,
                 'currency_profit': info.currency_profit,
                 'currency_margin': info.currency_margin,
+                'category': info.category,  # MT5 native category (e.g., 'Majors', 'Crypto', etc.)
             }
             
             # Cache it
@@ -308,33 +309,33 @@ class MT5Connector:
     def get_positions(self, symbol: Optional[str] = None, magic_number: Optional[int] = None) -> List[PositionInfo]:
         """
         Get open positions.
-        
+
         Args:
             symbol: Filter by symbol (optional)
             magic_number: Filter by magic number (optional)
-            
+
         Returns:
             List of PositionInfo objects
         """
         if not self.is_connected:
             return []
-        
+
         try:
             # Get all positions or filter by symbol
             if symbol:
                 positions = mt5.positions_get(symbol=symbol)
             else:
                 positions = mt5.positions_get()
-            
+
             if positions is None:
                 return []
-            
+
             result = []
             for pos in positions:
                 # Filter by magic number if specified
                 if magic_number is not None and pos.magic != magic_number:
                     continue
-                
+
                 pos_info = PositionInfo(
                     ticket=pos.ticket,
                     symbol=pos.symbol,
@@ -350,13 +351,58 @@ class MT5Connector:
                     comment=pos.comment
                 )
                 result.append(pos_info)
-            
+
             return result
-            
+
         except Exception as e:
             self.logger.error(f"Error getting positions: {e}")
             return []
-    
+
+    def get_closed_position_info(self, ticket: int) -> Optional[Tuple[str, float]]:
+        """
+        Get information about a closed position from history.
+
+        Args:
+            ticket: Position ticket
+
+        Returns:
+            Tuple of (symbol, profit) or None if not found
+        """
+        if not self.is_connected:
+            return None
+
+        try:
+            # Request history for the last 7 days
+            from_date = datetime.now() - timedelta(days=7)
+            to_date = datetime.now()
+
+            # Get history deals
+            if not mt5.history_deals_get(from_date, to_date):
+                self.logger.warning(f"Failed to get history deals for ticket {ticket}")
+                return None
+
+            # Get all deals
+            deals = mt5.history_deals_get(from_date, to_date)
+            if deals is None or len(deals) == 0:
+                return None
+
+            # Find the OUT deal for this position
+            for deal in deals:
+                # Check if this is an OUT deal (position closure) for our ticket
+                if (deal.position_id == ticket and
+                    deal.entry == mt5.DEAL_ENTRY_OUT):
+
+                    symbol = deal.symbol
+                    profit = deal.profit
+
+                    return (symbol, profit)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error getting closed position info for ticket {ticket}: {e}")
+            return None
+
     def get_current_price(self, symbol: str, price_type: str = 'bid') -> Optional[float]:
         """
         Get current price for symbol.

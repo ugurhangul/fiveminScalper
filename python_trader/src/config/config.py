@@ -17,10 +17,10 @@ load_dotenv()
 @dataclass
 class StrategyConfig:
     """Strategy settings"""
-    entry_offset_percent: float = 0.01
-    stop_loss_offset_percent: float = 0.02  # Deprecated: use stop_loss_offset_points instead
+    entry_offset_percent: float = 0
+    stop_loss_offset_percent: float = 0  # Deprecated: use stop_loss_offset_points instead
     stop_loss_offset_points: int = 100  # Stop loss offset in points (recommended)
-    use_point_based_sl: bool = True  # Use point-based SL calculation instead of percentage
+    use_point_based_sl: bool = False  # Use point-based SL calculation instead of percentage
     risk_reward_ratio: float = 2.0
 
 

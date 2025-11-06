@@ -49,11 +49,18 @@ class SymbolStrategy:
         self.trade_manager = trade_manager
         self.indicators = indicators
         self.logger = get_logger()
-        
+
+        # Get MT5 category from symbol info if available
+        mt5_category = None
+        symbol_info = connector.get_symbol_info(symbol)
+        if symbol_info:
+            mt5_category = symbol_info.get('category')
+
         # Detect symbol category and get optimized parameters
         self.category, self.symbol_params = SymbolOptimizer.get_symbol_parameters(
             symbol,
-            SymbolParameters()  # Default parameters
+            SymbolParameters(),  # Default parameters
+            mt5_category=mt5_category  # Pass MT5 native category for better accuracy
         )
 
         # Set initial confirmation states based on config
@@ -113,7 +120,9 @@ class SymbolStrategy:
         self.symbol_tracker = SymbolTracker(
             symbol=symbol,
             config=config.symbol_adaptation,
-            persistence=symbol_persistence
+            persistence=symbol_persistence,
+            connector=connector,
+            magic_number=config.advanced.magic_number
         )
 
         # State

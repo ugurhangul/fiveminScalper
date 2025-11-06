@@ -1311,13 +1311,24 @@ class StrategyEngine:
         Returns:
             TradeSignal for TRUE BUY
         """
+        # Find the LOWEST LOW among the last 10 candles that closed BELOW 4H low
+        # This matches the FALSE BUY strategy and MQL5: FindLowestLowInRange()
+        lowest_low = self._find_lowest_low_in_pattern(candle_4h.low)
+
+        if lowest_low is None:
+            self.logger.warning("No valid lowest low found for TRUE BUY signal", self.symbol)
+            lowest_low = candle_4h.low  # Fallback to 4H low
+
         # Entry: Will use current ASK price at execution
         entry_price = candle_5m.close
 
-        # Stop Loss: Below the 4H high (the breakout level)
-        sl_offset = self._calculate_sl_offset(candle_4h.high)
+        # Stop Loss: Below the LOWEST LOW (same as FALSE BUY strategy)
+        # Use point-based or percentage-based calculation
+        sl_offset = self._calculate_sl_offset(lowest_low)
 
-        # Add spread to SL
+        # Add spread to SL to account for bid-ask spread
+        # For BUY: Entry at ASK, SL triggered when BID hits SL
+        # So we need to widen SL by spread amount
         spread_price = 0.0
         if self.connector is not None:
             symbol_info = self.connector.get_symbol_info(self.symbol)
@@ -1326,8 +1337,12 @@ class StrategyEngine:
                 if spread_points is not None:
                     point = symbol_info['point']
                     spread_price = spread_points * point
+                    self.logger.debug(
+                        f"Adding spread to TRUE BUY SL: {spread_points:.1f} points = {spread_price:.5f}",
+                        self.symbol
+                    )
 
-        stop_loss = candle_4h.high - sl_offset - spread_price
+        stop_loss = lowest_low - sl_offset - spread_price
 
         # Take Profit: Based on R:R ratio
         risk = entry_price - stop_loss
@@ -1383,13 +1398,24 @@ class StrategyEngine:
         Returns:
             TradeSignal for TRUE SELL
         """
+        # Find the HIGHEST HIGH among the last 10 candles that closed ABOVE 4H high
+        # This matches the FALSE SELL strategy and MQL5: FindHighestHighInRange()
+        highest_high = self._find_highest_high_in_pattern(candle_4h.high)
+
+        if highest_high is None:
+            self.logger.warning("No valid highest high found for TRUE SELL signal", self.symbol)
+            highest_high = candle_4h.high  # Fallback to 4H high
+
         # Entry: Will use current BID price at execution
         entry_price = candle_5m.close
 
-        # Stop Loss: Above the 4H low (the breakout level)
-        sl_offset = self._calculate_sl_offset(candle_4h.low)
+        # Stop Loss: Above the HIGHEST HIGH (same as FALSE SELL strategy)
+        # Use point-based or percentage-based calculation
+        sl_offset = self._calculate_sl_offset(highest_high)
 
-        # Add spread to SL
+        # Add spread to SL to account for bid-ask spread
+        # For SELL: Entry at BID, SL triggered when ASK hits SL
+        # So we need to widen SL by spread amount
         spread_price = 0.0
         if self.connector is not None:
             symbol_info = self.connector.get_symbol_info(self.symbol)
@@ -1398,8 +1424,12 @@ class StrategyEngine:
                 if spread_points is not None:
                     point = symbol_info['point']
                     spread_price = spread_points * point
+                    self.logger.debug(
+                        f"Adding spread to TRUE SELL SL: {spread_points:.1f} points = {spread_price:.5f}",
+                        self.symbol
+                    )
 
-        stop_loss = candle_4h.low + sl_offset + spread_price
+        stop_loss = highest_high + sl_offset + spread_price
 
         # Take Profit: Based on R:R ratio
         risk = stop_loss - entry_price

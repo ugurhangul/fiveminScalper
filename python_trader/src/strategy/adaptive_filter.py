@@ -41,26 +41,26 @@ class AdaptiveFilter:
         if is_win:
             self.state.consecutive_wins += 1
             self.state.consecutive_losses = 0
-            
+
             self.logger.info(
                 f"Trade WIN - Consecutive wins: {self.state.consecutive_wins}",
                 self.symbol
             )
-            
+
             # Check if we should disable filters (winning streak)
-            if self.state.consecutive_wins >= self.config.consecutive_wins_to_disable:
+            if self.state.consecutive_wins >= self.config.adaptive_win_recovery:
                 self._disable_filters()
         else:
             self.state.consecutive_losses += 1
             self.state.consecutive_wins = 0
-            
+
             self.logger.info(
                 f"Trade LOSS - Consecutive losses: {self.state.consecutive_losses}",
                 self.symbol
             )
-            
+
             # Check if we should enable filters (losing streak)
-            if self.state.consecutive_losses >= self.config.consecutive_losses_to_enable:
+            if self.state.consecutive_losses >= self.config.adaptive_loss_trigger:
                 self._enable_filters()
     
     def _enable_filters(self):

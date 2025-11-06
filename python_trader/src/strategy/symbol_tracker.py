@@ -2,18 +2,23 @@
 Symbol performance tracking and auto-disable/enable logic.
 """
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from src.models.data_models import SymbolStats
 from src.config.config import SymbolAdaptationConfig
 from src.strategy.symbol_performance_persistence import SymbolPerformancePersistence
 from src.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from src.core.mt5_connector import MT5Connector
 
 
 class SymbolTracker:
     """Tracks symbol performance and manages auto-disable/enable"""
 
     def __init__(self, symbol: str, config: SymbolAdaptationConfig,
-                 persistence: Optional[SymbolPerformancePersistence] = None):
+                 persistence: Optional[SymbolPerformancePersistence] = None,
+                 connector: Optional['MT5Connector'] = None,
+                 magic_number: Optional[int] = None):
         """
         Initialize symbol tracker.
 
@@ -21,6 +26,8 @@ class SymbolTracker:
             symbol: Symbol name
             config: Symbol adaptation configuration
             persistence: Symbol performance persistence instance (optional)
+            connector: MT5 connector instance (optional, for history reconstruction)
+            magic_number: Magic number for filtering trades (optional, for history reconstruction)
         """
         self.symbol = symbol
         self.config = config
@@ -36,10 +43,32 @@ class SymbolTracker:
             self.logger.info(f"Loaded existing stats for {symbol}: {self.stats.total_trades} trades, "
                            f"Win rate: {self.stats.win_rate:.1f}%, Net P/L: ${self.stats.net_profit:.2f}", symbol)
         else:
-            self.stats = SymbolStats()
-            # Initialize week start time
-            self.stats.week_start_time = self._get_current_week_start()
-            self._save_stats()
+            # Try to construct stats from MT5 history if connector is provided
+            if connector is not None and magic_number is not None:
+                self.logger.info(f"No existing stats for {symbol}, attempting to construct from MT5 history", symbol)
+                constructed_stats = self.persistence.construct_stats_from_mt5_history(
+                    symbol=symbol,
+                    connector=connector,
+                    magic_number=magic_number,
+                    days_back=30  # Look back 30 days
+                )
+
+                if constructed_stats:
+                    self.stats = constructed_stats
+                    # Save the constructed stats
+                    self._save_stats()
+                    self.logger.info(f"Successfully constructed stats from history for {symbol}", symbol)
+                else:
+                    # No history found, start fresh
+                    self.stats = SymbolStats()
+                    self.stats.week_start_time = self._get_current_week_start()
+                    self._save_stats()
+                    self.logger.info(f"No history found, starting fresh stats for {symbol}", symbol)
+            else:
+                # No connector provided, start fresh
+                self.stats = SymbolStats()
+                self.stats.week_start_time = self._get_current_week_start()
+                self._save_stats()
 
         # Disable tracking (derived from stats)
         self.is_disabled = not self.stats.is_enabled

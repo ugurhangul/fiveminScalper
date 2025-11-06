@@ -8,13 +8,15 @@ from src.models.data_models import PositionType, TradeSignal
 from src.core.mt5_connector import MT5Connector
 from src.execution.position_persistence import PositionPersistence
 from src.utils.logger import get_logger
+from src.utils.autotrading_cooldown import AutoTradingCooldown
 
 
 class OrderManager:
     """Manages order execution and modification"""
 
     def __init__(self, connector: MT5Connector, magic_number: int, trade_comment: str,
-                 persistence: Optional[PositionPersistence] = None):
+                 persistence: Optional[PositionPersistence] = None,
+                 cooldown_manager: Optional[AutoTradingCooldown] = None):
         """
         Initialize order manager.
 
@@ -23,6 +25,7 @@ class OrderManager:
             magic_number: Magic number for orders
             trade_comment: Comment for trades
             persistence: Position persistence instance (optional)
+            cooldown_manager: AutoTrading cooldown manager (optional)
         """
         self.connector = connector
         self.magic_number = magic_number
@@ -32,6 +35,9 @@ class OrderManager:
 
         # Position persistence
         self.persistence = persistence if persistence is not None else PositionPersistence()
+
+        # AutoTrading cooldown manager
+        self.cooldown = cooldown_manager if cooldown_manager is not None else AutoTradingCooldown()
     
     def normalize_price(self, symbol: str, price: float) -> float:
         """
@@ -89,6 +95,18 @@ class OrderManager:
             Ticket number if successful, None otherwise
         """
         symbol = signal.symbol
+
+        # Check if in cooldown period
+        if self.cooldown.is_in_cooldown():
+            remaining = self.cooldown.get_remaining_time()
+            if remaining:
+                minutes = int(remaining.total_seconds() / 60)
+                seconds = int(remaining.total_seconds() % 60)
+                self.logger.debug(
+                    f"Trade rejected - cooldown active ({minutes}m {seconds}s remaining)",
+                    symbol
+                )
+            return None
 
         # Check if AutoTrading is enabled in terminal
         if not self.connector.is_autotrading_enabled():
@@ -226,6 +244,17 @@ class OrderManager:
                 return None
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
+                # Check for AutoTrading disabled by server
+                if result.retcode == 10026:
+                    self.logger.warning(
+                        f"Trade rejected - AutoTrading disabled by server (retcode 10026)",
+                        symbol
+                    )
+                    # Activate cooldown to prevent spam
+                    self.cooldown.activate_cooldown("AutoTrading disabled by server (error 10026)")
+                    return None
+
+                # Other errors
                 self.logger.trade_error(
                     symbol=symbol,
                     error_type="Trade Execution",
@@ -494,7 +523,7 @@ class OrderManager:
             return mt5.ORDER_FILLING_FOK
     
     def modify_position(self, ticket: int, sl: Optional[float] = None,
-                       tp: Optional[float] = None) -> bool:
+                       tp: Optional[float] = None):
         """
         Modify position SL/TP.
 
@@ -504,9 +533,16 @@ class OrderManager:
             tp: New take profit (None to keep current)
 
         Returns:
-            True if successful, False otherwise
+            True if successful
+            False if failed (permanent error)
+            "RETRY" if temporarily blocked by server (should retry later)
         """
         try:
+            # Check if in cooldown period
+            if self.cooldown.is_in_cooldown():
+                # Return RETRY to keep position in tracking
+                return "RETRY"
+
             # Get current position
             position = mt5.positions_get(ticket=ticket)
             if not position or len(position) == 0:
@@ -521,24 +557,31 @@ class OrderManager:
             new_tp = tp if tp is not None else pos.tp
 
             # Normalize prices
-            new_sl = self.normalize_price(symbol, new_sl) if new_sl > 0 else 0
-            new_tp = self.normalize_price(symbol, new_tp) if new_tp > 0 else 0
+            # Ensure values are always float type for MT5 compatibility
+            new_sl = self.normalize_price(symbol, new_sl) if new_sl > 0 else 0.0
+            new_tp = self.normalize_price(symbol, new_tp) if new_tp > 0 else 0.0
 
             # Check if values actually changed after normalization
             # MT5 returns error 10025 "No changes" if SL/TP are identical
-            if new_sl == pos.sl and new_tp == pos.tp:
+            # Use tolerance-based comparison to avoid floating-point precision issues
+            symbol_info = self.connector.get_symbol_info(symbol)
+            if symbol_info is None:
+                self.logger.error(f"Failed to get symbol info for modifying position {ticket}")
+                return False
+
+            point = symbol_info['point']
+            tolerance = point * 0.1  # Use 0.1 point as tolerance
+
+            sl_unchanged = abs(new_sl - pos.sl) < tolerance
+            tp_unchanged = abs(new_tp - pos.tp) < tolerance
+
+            if sl_unchanged and tp_unchanged:
                 self.logger.debug(
                     f"Position {ticket} modification skipped - no changes after normalization "
                     f"(SL: {new_sl:.5f}, TP: {new_tp:.5f})",
                     symbol
                 )
                 return True  # Return True since position is already in desired state
-
-            # Get symbol info for validation and error reporting
-            symbol_info = self.connector.get_symbol_info(symbol)
-            if symbol_info is None:
-                self.logger.error(f"Failed to get symbol info for modifying position {ticket}")
-                return False
 
             # Get current market price for logging
             current_price = self.connector.get_current_price(symbol, 'bid' if pos.type == mt5.POSITION_TYPE_BUY else 'ask')
@@ -576,13 +619,13 @@ class OrderManager:
                 return False
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
-                self.logger.error(
-                    f"Modify failed for position {ticket}: retcode={result.retcode}, "
-                    f"comment='{result.comment}'",
-                    symbol
-                )
                 # Log additional context for common errors
                 if result.retcode == 10016:  # Invalid stops
+                    self.logger.error(
+                        f"Modify failed for position {ticket}: retcode={result.retcode}, "
+                        f"comment='{result.comment}'",
+                        symbol
+                    )
                     point = symbol_info['point']
                     stops_level = symbol_info.get('stops_level', 0)
                     freeze_level = symbol_info.get('freeze_level', 0)
@@ -600,10 +643,35 @@ class OrderManager:
                         f"  SL distance: {sl_distance_points:.0f} pts, TP distance: {tp_distance_points:.0f} pts",
                         symbol
                     )
-                elif result.retcode == 10027:  # Autotrading disabled
+                elif result.retcode == 10026:  # AutoTrading disabled by server
+                    self.logger.warning(
+                        f"Modify blocked - AutoTrading disabled by server (retcode 10026)",
+                        symbol
+                    )
+                    # Activate cooldown to prevent spam
+                    self.cooldown.activate_cooldown("AutoTrading disabled by server (error 10026)")
+                    # Return RETRY to keep position in tracking
+                    return "RETRY"
+                elif result.retcode == 10027:  # Autotrading disabled by terminal
+                    self.logger.error(
+                        f"Modify failed for position {ticket}: retcode={result.retcode}, "
+                        f"comment='{result.comment}'",
+                        symbol
+                    )
                     self.logger.error("  Autotrading is disabled on this account", symbol)
                 elif result.retcode == 10025:  # No changes
-                    self.logger.error("  No changes detected by broker", symbol)
+                    self.logger.debug(
+                        f"Modify skipped for position {ticket}: No changes detected by broker",
+                        symbol
+                    )
+                    # Return True since position is already in desired state
+                    return True
+                else:
+                    self.logger.error(
+                        f"Modify failed for position {ticket}: retcode={result.retcode}, "
+                        f"comment='{result.comment}'",
+                        symbol
+                    )
 
                 return False
 
