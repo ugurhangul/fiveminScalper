@@ -394,7 +394,9 @@ class RiskManager:
     
     def can_open_new_position(self, magic_number: int, symbol: Optional[str] = None,
                              position_type: Optional[PositionType] = None,
-                             all_confirmations_met: bool = False) -> Tuple[bool, str]:
+                             all_confirmations_met: bool = False,
+                             strategy_type: Optional[str] = None,
+                             range_id: Optional[str] = None) -> Tuple[bool, str]:
         """
         Check if we can open a new position.
 
@@ -406,6 +408,8 @@ class RiskManager:
             symbol: Symbol to check for existing positions (optional)
             position_type: Position type (BUY/SELL) to check for duplicates (optional)
             all_confirmations_met: If True, allows second position of same type (optional)
+            strategy_type: Strategy type ("TB" for True Breakout, "FB" for False Breakout) (optional)
+            range_id: Range identifier (e.g., "4H_5M" for M5 scalp, "15M_1M" for M1 scalp) (optional)
 
         Returns:
             Tuple of (can_open, reason)
@@ -422,47 +426,82 @@ class RiskManager:
         if self.persistence and symbol and position_type:
             persisted_tickets = self.persistence.get_all_tickets()
 
-            # Check if any persisted position matches this symbol and type
+            # Check if any persisted position matches this symbol, type, strategy, AND range
             for ticket in persisted_tickets:
                 pos_data = self.persistence.get_position(ticket)
                 if pos_data and pos_data['symbol'] == symbol:
                     # Check if position type matches
                     persisted_type = PositionType(pos_data['position_type'])
                     if persisted_type == position_type:
-                        # Position exists in persistence but might not be in MT5 yet
-                        # This can happen during bot restart before MT5 sync
-                        pos_type_str = "BUY" if position_type == PositionType.BUY else "SELL"
-                        self.logger.warning(
-                            f"Position found in persistence file: {ticket} ({symbol} {pos_type_str}). "
-                            f"Preventing duplicate creation.",
-                            symbol
-                        )
-                        # Don't immediately reject - let the normal logic below handle it
-                        # This is just a warning that persistence detected a potential duplicate
+                        # Extract strategy type and range from comment (format: "TB|BUY|V|4H5M")
+                        comment = pos_data.get('comment', '')
+                        parts = comment.split('|') if '|' in comment else []
+                        persisted_strategy = parts[0] if len(parts) > 0 else ''
+                        persisted_range = parts[3] if len(parts) > 3 else ''
 
-        # Check if position of same type already exists for this symbol
+                        # Build match criteria
+                        strategy_match = (not strategy_type) or (persisted_strategy == strategy_type)
+                        range_match = (not range_id) or (persisted_range == range_id.replace('_', ''))
+
+                        # Only warn if SAME strategy type AND range
+                        if strategy_match and range_match:
+                            # Position exists in persistence but might not be in MT5 yet
+                            # This can happen during bot restart before MT5 sync
+                            pos_type_str = "BUY" if position_type == PositionType.BUY else "SELL"
+                            strategy_str = f" {strategy_type}" if strategy_type else ""
+                            range_str = f" [{range_id}]" if range_id else ""
+                            self.logger.warning(
+                                f"Position found in persistence file: {ticket} ({symbol} {pos_type_str}{strategy_str}{range_str}). "
+                                f"Preventing duplicate creation.",
+                                symbol
+                            )
+                            # Don't immediately reject - let the normal logic below handle it
+                            # This is just a warning that persistence detected a potential duplicate
+
+        # Check if position of same type, strategy, AND range already exists for this symbol
         if symbol and position_type:
+            # Filter by symbol and position type
             same_type_positions = [
                 pos for pos in positions
                 if pos.symbol == symbol and pos.position_type == position_type
             ]
 
+            # Further filter by strategy type and range if provided
+            if strategy_type or range_id:
+                filtered_positions = []
+                for pos in same_type_positions:
+                    # Extract strategy type and range from comment (format: "TB|BUY|V|4H5M")
+                    parts = pos.comment.split('|') if '|' in pos.comment else []
+                    comment_strategy = parts[0] if len(parts) > 0 else ''
+                    comment_range = parts[3] if len(parts) > 3 else ''
+
+                    # Build match criteria
+                    strategy_match = (not strategy_type) or (comment_strategy == strategy_type)
+                    range_match = (not range_id) or (comment_range == range_id.replace('_', ''))
+
+                    # Only include if both criteria match
+                    if strategy_match and range_match:
+                        filtered_positions.append(pos)
+                same_type_positions = filtered_positions
+
             if len(same_type_positions) > 0:
                 pos_type_str = "BUY" if position_type == PositionType.BUY else "SELL"
+                strategy_str = f" {strategy_type}" if strategy_type else ""
+                range_str = f" [{range_id}]" if range_id else ""
 
-                # If all confirmations are met, allow up to 2 positions of same type
+                # If all confirmations are met, allow up to 2 positions of same type, strategy, and range
                 if all_confirmations_met and len(same_type_positions) < 2:
                     self.logger.info(
-                        f"Allowing second {pos_type_str} position for {symbol} - all confirmations met",
+                        f"Allowing second {pos_type_str}{strategy_str}{range_str} position for {symbol} - all confirmations met",
                         symbol
                     )
                     return True, ""
 
                 # Otherwise, reject if any position exists
                 if len(same_type_positions) >= 2:
-                    return False, f"Maximum 2 {pos_type_str} positions already exist for {symbol}"
+                    return False, f"Maximum 2 {pos_type_str}{strategy_str}{range_str} positions already exist for {symbol}"
                 else:
-                    return False, f"{pos_type_str} position already exists for {symbol} (confirmations not met)"
+                    return False, f"{pos_type_str}{strategy_str}{range_str} position already exists for {symbol} (confirmations not met)"
 
         # Check account balance is valid
         balance = self.connector.get_account_balance()

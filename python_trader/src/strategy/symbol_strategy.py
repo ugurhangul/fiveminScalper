@@ -273,13 +273,19 @@ class SymbolStrategy:
             self.logger.info(f"Volume Confirmed: {signal.volume_confirmed}", self.symbol)
             self.logger.info(f"Divergence Confirmed: {signal.divergence_confirmed}", self.symbol)
 
+        # Determine strategy type and range for duplicate checking
+        strategy_type = "TB" if signal.is_true_breakout else "FB"
+        range_id = signal.range_id if signal.range_id != "default" else None
+
         # Check if we can open new position
-        # Allows up to 2 positions of same type if all confirmations are met
+        # Allows up to 2 positions of same type, strategy, AND range if all confirmations are met
         can_open, reason = self.risk_manager.can_open_new_position(
             magic_number=config.advanced.magic_number,
             symbol=self.symbol,
             position_type=signal.signal_type,
-            all_confirmations_met=signal.all_confirmations_met
+            all_confirmations_met=signal.all_confirmations_met,
+            strategy_type=strategy_type,
+            range_id=range_id
         )
 
         if not can_open:
