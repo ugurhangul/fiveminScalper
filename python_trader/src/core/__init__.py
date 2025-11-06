@@ -1,2 +1,0 @@
-"""Core trading engine"""
-
