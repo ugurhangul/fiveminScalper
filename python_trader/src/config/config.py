@@ -79,22 +79,24 @@ class RangeConfigSettings:
 
     # List of range configurations
     # Default: Two ranges operating simultaneously
-    # - Range 1: 4H candle at 04:00 UTC, 5M breakout detection
-    # - Range 2: 15M candle at 04:30 UTC, 1M breakout detection
+    # - Range 1: 4H candle at 04:00 UTC, 5M breakout detection, M5 ATR
+    # - Range 2: 15M candle at 04:30 UTC, 1M breakout detection, M1 ATR
     ranges: List[RangeConfig] = field(default_factory=lambda: [
         RangeConfig(
             range_id="4H_5M",
             reference_timeframe="H4",
             reference_time=dt_time(4, 0),  # 04:00 UTC
             breakout_timeframe="M5",
-            use_specific_time=True
+            use_specific_time=True,
+            atr_timeframe="M5"  # M5 ATR for M5 scalping
         ),
         RangeConfig(
             range_id="15M_1M",
             reference_timeframe="M15",
             reference_time=dt_time(4, 30),  # 04:30 UTC
             breakout_timeframe="M1",
-            use_specific_time=True
+            use_specific_time=True,
+            atr_timeframe="M1"  # M1 ATR for M1 scalping
         )
     ])
 

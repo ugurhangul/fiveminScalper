@@ -380,10 +380,28 @@ class StrategyEngine:
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
                 self.logger.info(f"Reversal Volume: {candle_5m.volume}", self.symbol)
+                self.logger.info(f"Waiting for next candle to confirm reversal direction...", self.symbol)
 
-                # Always generate signal (confirmations tracked in signal)
+        # === FALSE BUY: Check for confirmation candle after reversal ===
+        elif self.unified_state.false_buy_reversal_detected and not self.unified_state.false_buy_reversal_confirmed:
+            # Confirmation: next candle continues in reversal direction (stays above 4H low)
+            if candle_5m.close > candle_4h.low:
+                self.unified_state.false_buy_reversal_confirmed = True
+
+                self.logger.info(f">>> FALSE BUY REVERSAL CONFIRMED <<<", self.symbol)
+                self.logger.info(f"Confirmation Close: {candle_5m.close:.5f}", self.symbol)
+                self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
                 self.logger.info("*** FALSE BUY SIGNAL GENERATED ***", self.symbol)
                 return self._generate_buy_signal(candle_4h, candle_5m)
+            else:
+                # Reversal failed - price went back below 4H low
+                self.logger.info(f">>> FALSE BUY REVERSAL FAILED - Price back below 4H low <<<", self.symbol)
+                self.logger.info(f"Resetting false buy state...", self.symbol)
+                self.unified_state.false_buy_qualified = False
+                self.unified_state.false_buy_reversal_detected = False
+                self.unified_state.false_buy_reversal_volume = 0
+                self.unified_state.false_buy_volume_ok = False
+                self.unified_state.false_buy_reversal_volume_ok = False
 
         # === FALSE SELL: Check for reversal back below 4H high ===
         if self.unified_state.false_sell_qualified and not self.unified_state.false_sell_reversal_detected:
@@ -400,10 +418,28 @@ class StrategyEngine:
                 self.logger.info(f"5M Close: {candle_5m.close:.5f}", self.symbol)
                 self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
                 self.logger.info(f"Reversal Volume: {candle_5m.volume}", self.symbol)
+                self.logger.info(f"Waiting for next candle to confirm reversal direction...", self.symbol)
 
-                # Always generate signal (confirmations tracked in signal)
+        # === FALSE SELL: Check for confirmation candle after reversal ===
+        elif self.unified_state.false_sell_reversal_detected and not self.unified_state.false_sell_reversal_confirmed:
+            # Confirmation: next candle continues in reversal direction (stays below 4H high)
+            if candle_5m.close < candle_4h.high:
+                self.unified_state.false_sell_reversal_confirmed = True
+
+                self.logger.info(f">>> FALSE SELL REVERSAL CONFIRMED <<<", self.symbol)
+                self.logger.info(f"Confirmation Close: {candle_5m.close:.5f}", self.symbol)
+                self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
                 self.logger.info("*** FALSE SELL SIGNAL GENERATED ***", self.symbol)
                 return self._generate_sell_signal(candle_4h, candle_5m)
+            else:
+                # Reversal failed - price went back above 4H high
+                self.logger.info(f">>> FALSE SELL REVERSAL FAILED - Price back above 4H high <<<", self.symbol)
+                self.logger.info(f"Resetting false sell state...", self.symbol)
+                self.unified_state.false_sell_qualified = False
+                self.unified_state.false_sell_reversal_detected = False
+                self.unified_state.false_sell_reversal_volume = 0
+                self.unified_state.false_sell_volume_ok = False
+                self.unified_state.false_sell_reversal_volume_ok = False
 
         # === TRUE BUY: Check for retest and continuation above 4H high ===
         if self.unified_state.true_buy_qualified and not self.unified_state.true_buy_continuation_detected:

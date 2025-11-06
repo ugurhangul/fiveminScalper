@@ -313,19 +313,45 @@ class OrderManager:
         """
         point = symbol_info['point']
         stops_level = symbol_info.get('stops_level', 0)
+        freeze_level = symbol_info.get('freeze_level', 0)
+
+        # Log broker requirements for debugging
+        self.logger.debug(
+            f"Broker Stop Requirements: stops_level={stops_level} points, "
+            f"freeze_level={freeze_level} points, point={point}",
+            symbol
+        )
+
+        # Calculate current distances
+        sl_distance = abs(price - sl)
+        tp_distance = abs(price - tp)
+        sl_distance_points = sl_distance / point if point > 0 else 0
+        tp_distance_points = tp_distance / point if point > 0 else 0
+
+        self.logger.debug(
+            f"Current Stops: Entry={price:.5f}, SL={sl:.5f} ({sl_distance_points:.0f} pts), "
+            f"TP={tp:.5f} ({tp_distance_points:.0f} pts)",
+            symbol
+        )
 
         # If stops_level is 0, no minimum distance required
         if stops_level == 0:
+            self.logger.debug("No minimum stop level required (stops_level=0)", symbol)
             return sl, tp
 
         # Calculate minimum distance in price
         min_distance = stops_level * point
 
+        self.logger.debug(
+            f"Minimum required distance: {min_distance:.5f} ({stops_level} points)",
+            symbol
+        )
+
         # Check and adjust SL
-        sl_distance = abs(price - sl)
         if sl_distance < min_distance:
             self.logger.warning(
-                f"SL too close to entry: {sl_distance:.5f} < {min_distance:.5f}. Adjusting...",
+                f"SL too close to entry: {sl_distance:.5f} ({sl_distance_points:.0f} pts) < "
+                f"{min_distance:.5f} ({stops_level} pts). Adjusting...",
                 symbol
             )
             if signal_type == PositionType.BUY:
@@ -336,10 +362,10 @@ class OrderManager:
             self.logger.info(f"Adjusted SL: {sl:.5f}", symbol)
 
         # Check and adjust TP
-        tp_distance = abs(price - tp)
         if tp_distance < min_distance:
             self.logger.warning(
-                f"TP too close to entry: {tp_distance:.5f} < {min_distance:.5f}. Adjusting...",
+                f"TP too close to entry: {tp_distance:.5f} ({tp_distance_points:.0f} pts) < "
+                f"{min_distance:.5f} ({stops_level} pts). Adjusting...",
                 symbol
             )
             if signal_type == PositionType.BUY:
@@ -372,6 +398,18 @@ class OrderManager:
                 tp = price - min_distance
                 tp = self.normalize_price(symbol, tp)
                 self.logger.info(f"Corrected TP: {tp:.5f}", symbol)
+
+        # Log final validated stops
+        final_sl_distance = abs(price - sl)
+        final_tp_distance = abs(price - tp)
+        final_sl_distance_points = final_sl_distance / point if point > 0 else 0
+        final_tp_distance_points = final_tp_distance / point if point > 0 else 0
+
+        self.logger.debug(
+            f"Final Validated Stops: SL={sl:.5f} ({final_sl_distance_points:.0f} pts), "
+            f"TP={tp:.5f} ({final_tp_distance_points:.0f} pts)",
+            symbol
+        )
 
         return sl, tp
 
@@ -496,6 +534,25 @@ class OrderManager:
                 )
                 return True  # Return True since position is already in desired state
 
+            # Get symbol info for validation and error reporting
+            symbol_info = self.connector.get_symbol_info(symbol)
+            if symbol_info is None:
+                self.logger.error(f"Failed to get symbol info for modifying position {ticket}")
+                return False
+
+            # Get current market price for logging
+            current_price = self.connector.get_current_price(symbol, 'bid' if pos.type == mt5.POSITION_TYPE_BUY else 'ask')
+            if current_price is None:
+                self.logger.error(f"Failed to get current price for modifying position {ticket}")
+                return False
+
+            # Log modification details
+            self.logger.debug(
+                f"Modifying position {ticket}: Current price={current_price:.5f}, "
+                f"SL: {pos.sl:.5f} -> {new_sl:.5f}, TP: {pos.tp:.5f} -> {new_tp:.5f}",
+                symbol
+            )
+
             # Create modification request
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
@@ -509,13 +566,45 @@ class OrderManager:
             result = mt5.order_send(request)
 
             if result is None:
-                self.logger.error(f"Modify failed for position {ticket}, no result")
+                # Get last error from MT5
+                last_error = mt5.last_error()
+                self.logger.error(
+                    f"Modify failed for position {ticket}, no result returned from MT5. "
+                    f"Last error: {last_error}",
+                    symbol
+                )
                 return False
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 self.logger.error(
-                    f"Modify failed for position {ticket}: {result.retcode} - {result.comment}"
+                    f"Modify failed for position {ticket}: retcode={result.retcode}, "
+                    f"comment='{result.comment}'",
+                    symbol
                 )
+                # Log additional context for common errors
+                if result.retcode == 10016:  # Invalid stops
+                    point = symbol_info['point']
+                    stops_level = symbol_info.get('stops_level', 0)
+                    freeze_level = symbol_info.get('freeze_level', 0)
+
+                    sl_distance = abs(current_price - new_sl) if new_sl > 0 else 0
+                    tp_distance = abs(current_price - new_tp) if new_tp > 0 else 0
+                    sl_distance_points = sl_distance / point if point > 0 else 0
+                    tp_distance_points = tp_distance / point if point > 0 else 0
+
+                    self.logger.error(
+                        f"  stops_level={stops_level} pts, freeze_level={freeze_level} pts",
+                        symbol
+                    )
+                    self.logger.error(
+                        f"  SL distance: {sl_distance_points:.0f} pts, TP distance: {tp_distance_points:.0f} pts",
+                        symbol
+                    )
+                elif result.retcode == 10027:  # Autotrading disabled
+                    self.logger.error("  Autotrading is disabled on this account", symbol)
+                elif result.retcode == 10025:  # No changes
+                    self.logger.error("  No changes detected by broker", symbol)
+
                 return False
 
             self.logger.debug(

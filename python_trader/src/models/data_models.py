@@ -191,8 +191,8 @@ class RangeConfig:
     - Breakout candle: The smaller timeframe candle used to detect breakouts
 
     Examples:
-    - Range 1: 4H candle at 04:00 UTC, 5M breakout detection
-    - Range 2: 15M candle at 04:30 UTC, 1M breakout detection
+    - Range 1: 4H candle at 04:00 UTC, 5M breakout detection, M5 ATR
+    - Range 2: 15M candle at 04:30 UTC, 1M breakout detection, M1 ATR
     """
     # Unique identifier for this range configuration
     range_id: str
@@ -206,6 +206,9 @@ class RangeConfig:
     # Optional fields with defaults
     reference_time: Optional[time] = None  # Specific time to use (e.g., 04:00 for 4H, 04:30 for 15M)
     use_specific_time: bool = True  # Whether to use only specific reference candle times
+
+    # ATR configuration for this range
+    atr_timeframe: Optional[str] = None  # ATR timeframe (e.g., "M5", "M1") - defaults to breakout_timeframe if None
 
     def __str__(self) -> str:
         """String representation for logging"""
@@ -237,6 +240,7 @@ class UnifiedBreakoutState:
     # FALSE BREAKOUT - Reversal from BELOW (BUY signal)
     false_buy_qualified: bool = False  # Low volume breakout below
     false_buy_reversal_detected: bool = False  # Reversed back above
+    false_buy_reversal_confirmed: bool = False  # Next candle confirmed reversal direction
     false_buy_reversal_volume: int = 0
     false_buy_volume_ok: bool = False  # Breakout volume was low (tracked, not required)
     false_buy_reversal_volume_ok: bool = False  # Reversal volume was high (tracked, not required)
@@ -246,6 +250,7 @@ class UnifiedBreakoutState:
     # FALSE BREAKOUT - Reversal from ABOVE (SELL signal)
     false_sell_qualified: bool = False  # Low volume breakout above
     false_sell_reversal_detected: bool = False  # Reversed back below
+    false_sell_reversal_confirmed: bool = False  # Next candle confirmed reversal direction
     false_sell_reversal_volume: int = 0
     false_sell_volume_ok: bool = False  # Breakout volume was low (tracked, not required)
     false_sell_reversal_volume_ok: bool = False  # Reversal volume was high (tracked, not required)

@@ -15,7 +15,7 @@ class TradeManager:
 
     def __init__(self, connector: MT5Connector, order_manager: OrderManager,
                  trailing_config: TrailingStopConfig, use_breakeven: bool,
-                 breakeven_trigger_rr: float, indicators=None):
+                 breakeven_trigger_rr: float, indicators=None, range_configs=None):
         """
         Initialize trade manager.
 
@@ -26,6 +26,7 @@ class TradeManager:
             use_breakeven: Enable breakeven management
             breakeven_trigger_rr: R:R ratio to trigger breakeven
             indicators: TechnicalIndicators instance (optional, needed for ATR trailing)
+            range_configs: List of RangeConfig instances (optional, for per-range ATR timeframes)
         """
         self.connector = connector
         self.order_manager = order_manager
@@ -33,6 +34,7 @@ class TradeManager:
         self.use_breakeven = use_breakeven
         self.breakeven_trigger_rr = breakeven_trigger_rr
         self.indicators = indicators
+        self.range_configs = range_configs or []
         self.logger = get_logger()
 
         # Track positions that have been moved to breakeven
@@ -44,7 +46,46 @@ class TradeManager:
         # Track ATR trailing stop data per position
         # Format: {ticket: {'peak_price': float, 'atr': float}}
         self.atr_trailing_data: Dict[int, Dict[str, float]] = {}
-    
+
+    def _get_atr_timeframe_for_position(self, pos: PositionInfo) -> str:
+        """
+        Get the appropriate ATR timeframe for a position based on its range configuration.
+
+        Args:
+            pos: Position info
+
+        Returns:
+            ATR timeframe string (e.g., "M5", "M1")
+        """
+        # Extract range_id from position comment
+        # Comment format: "TB|BUY|V|4H5M" or "FB|SELL|VD|15M1M"
+        if pos.comment and '|' in pos.comment:
+            parts = pos.comment.split('|')
+            if len(parts) >= 4:
+                # Last part is the range identifier (e.g., "4H5M" or "15M1M")
+                range_identifier = parts[3]
+
+                # Convert back to range_id format (e.g., "4H5M" -> "4H_5M")
+                # Try to match with known range configurations
+                for range_config in self.range_configs:
+                    # Remove underscores from range_id for comparison
+                    if range_config.range_id.replace("_", "") == range_identifier:
+                        # Use range-specific ATR timeframe if set, otherwise use breakout timeframe
+                        atr_tf = range_config.atr_timeframe or range_config.breakout_timeframe
+                        self.logger.debug(
+                            f"Position {pos.ticket} matched to range {range_config.range_id}, using ATR timeframe: {atr_tf}",
+                            pos.symbol
+                        )
+                        return atr_tf
+
+        # Fallback to global config if no range match found
+        fallback_tf = self.trailing_config.atr_timeframe
+        self.logger.debug(
+            f"Position {pos.ticket} using fallback ATR timeframe: {fallback_tf}",
+            pos.symbol
+        )
+        return fallback_tf
+
     def manage_positions(self, positions: List[PositionInfo]):
         """
         Manage all open positions.
@@ -115,10 +156,31 @@ class TradeManager:
         # Mark as trailing if not already
         if pos.ticket not in self.trailing_positions:
             self.trailing_positions.add(pos.ticket)
-            self.logger.info(
-                f"Fixed trailing stop ACTIVATED for position {pos.ticket}",
-                pos.symbol
+
+            # Remove TP when trailing stop is activated
+            success = self.order_manager.modify_position(
+                ticket=pos.ticket,
+                sl=pos.sl,
+                tp=0.0  # Remove TP
             )
+
+            if success:
+                self.logger.info(
+                    f"Fixed trailing stop ACTIVATED for position {pos.ticket}",
+                    pos.symbol
+                )
+                self.logger.info(
+                    f"Take Profit REMOVED - position will be managed by trailing stop",
+                    pos.symbol
+                )
+            else:
+                self.logger.warning(
+                    f"Failed to remove TP when activating trailing stop for position {pos.ticket}",
+                    pos.symbol
+                )
+                # Remove from tracking if we couldn't modify the position
+                self.trailing_positions.discard(pos.ticket)
+                return
 
         # Get symbol info for point value
         symbol_info = self.connector.get_symbol_info(pos.symbol)
@@ -138,7 +200,7 @@ class TradeManager:
                 success = self.order_manager.modify_position(
                     ticket=pos.ticket,
                     sl=new_sl,
-                    tp=pos.tp
+                    tp=0.0  # Keep TP removed while trailing
                 )
 
                 if success:
@@ -160,7 +222,7 @@ class TradeManager:
                 success = self.order_manager.modify_position(
                     ticket=pos.ticket,
                     sl=new_sl,
-                    tp=pos.tp
+                    tp=0.0  # Keep TP removed while trailing
                 )
 
                 if success:
@@ -184,10 +246,13 @@ class TradeManager:
             self.logger.warning("ATR trailing enabled but no indicators instance provided", pos.symbol)
             return
 
+        # Get position-specific ATR timeframe based on range configuration
+        atr_timeframe = self._get_atr_timeframe_for_position(pos)
+
         # Get candle data for ATR calculation
         df = self.connector.get_candles(
             pos.symbol,
-            self.trailing_config.atr_timeframe,
+            atr_timeframe,
             count=self.trailing_config.atr_period + 50
         )
 
@@ -235,22 +300,43 @@ class TradeManager:
             else:
                 initial_sl = pos.open_price + atr_distance
 
-            self.logger.info(
-                f"ATR trailing stop ACTIVATED for position {pos.ticket}",
-                pos.symbol
+            # Remove TP when trailing stop is activated
+            success = self.order_manager.modify_position(
+                ticket=pos.ticket,
+                sl=pos.sl,
+                tp=0.0  # Remove TP
             )
-            self.logger.info(
-                f"ATR({self.trailing_config.atr_period}): {atr:.5f} | Multiplier: {self.trailing_config.atr_multiplier}x",
-                pos.symbol
-            )
-            self.logger.info(
-                f"ATR Distance: {atr_distance:.5f} ({atr_distance/point:.1f} points)",
-                pos.symbol
-            )
-            self.logger.info(
-                f"Initial SL would be: {initial_sl:.5f}",
-                pos.symbol
-            )
+
+            if success:
+                self.logger.info(
+                    f"ATR trailing stop ACTIVATED for position {pos.ticket}",
+                    pos.symbol
+                )
+                self.logger.info(
+                    f"ATR({self.trailing_config.atr_period}) on {atr_timeframe}: {atr:.5f} | Multiplier: {self.trailing_config.atr_multiplier}x",
+                    pos.symbol
+                )
+                self.logger.info(
+                    f"ATR Distance: {atr_distance:.5f} ({atr_distance/point:.1f} points)",
+                    pos.symbol
+                )
+                self.logger.info(
+                    f"Initial SL would be: {initial_sl:.5f}",
+                    pos.symbol
+                )
+                self.logger.info(
+                    f"Take Profit REMOVED - position will be managed by trailing stop",
+                    pos.symbol
+                )
+            else:
+                self.logger.warning(
+                    f"Failed to remove TP when activating ATR trailing stop for position {pos.ticket}",
+                    pos.symbol
+                )
+                # Remove from tracking if we couldn't modify the position
+                self.trailing_positions.discard(pos.ticket)
+                del self.atr_trailing_data[pos.ticket]
+                return
 
         # Update peak price and trail stop
         tracking = self.atr_trailing_data[pos.ticket]
@@ -269,7 +355,7 @@ class TradeManager:
                 success = self.order_manager.modify_position(
                     ticket=pos.ticket,
                     sl=new_sl,
-                    tp=pos.tp
+                    tp=0.0  # Keep TP removed while trailing
                 )
 
                 if success:
@@ -300,7 +386,7 @@ class TradeManager:
                 success = self.order_manager.modify_position(
                     ticket=pos.ticket,
                     sl=new_sl,
-                    tp=pos.tp
+                    tp=0.0  # Keep TP removed while trailing
                 )
 
                 if success:

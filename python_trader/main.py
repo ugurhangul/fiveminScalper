@@ -70,7 +70,8 @@ class TradingBot:
             trailing_config=config.trailing_stop,
             use_breakeven=config.advanced.use_breakeven,
             breakeven_trigger_rr=config.advanced.breakeven_trigger_rr,
-            indicators=self.indicators
+            indicators=self.indicators,
+            range_configs=config.range_config.ranges
         )
 
         # Trading controller

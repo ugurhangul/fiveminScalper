@@ -433,9 +433,28 @@ class MultiRangeStrategyEngine:
                 self.logger.info(f"Breakout Close: {candle_breakout.close:.5f}", self.symbol)
                 self.logger.info(f"Reference Low: {candle_ref.low:.5f}", self.symbol)
                 self.logger.info(f"Reversal Volume: {candle_breakout.volume}", self.symbol)
+                self.logger.info(f"Waiting for next candle to confirm reversal direction...", self.symbol)
 
+        # === FALSE BUY: Check for confirmation candle after reversal ===
+        elif state.false_buy_reversal_detected and not state.false_buy_reversal_confirmed:
+            # Confirmation: next candle continues in reversal direction (stays above reference low)
+            if candle_breakout.close > candle_ref.low:
+                state.false_buy_reversal_confirmed = True
+
+                self.logger.info(f">>> FALSE BUY REVERSAL CONFIRMED [{range_id}] <<<", self.symbol)
+                self.logger.info(f"Confirmation Close: {candle_breakout.close:.5f}", self.symbol)
+                self.logger.info(f"Reference Low: {candle_ref.low:.5f}", self.symbol)
                 self.logger.info(f"*** FALSE BUY SIGNAL GENERATED [{range_id}] ***", self.symbol)
                 return self._generate_buy_signal(range_id, candle_ref, candle_breakout)
+            else:
+                # Reversal failed - price went back below reference low
+                self.logger.info(f">>> FALSE BUY REVERSAL FAILED [{range_id}] - Price back below reference low <<<", self.symbol)
+                self.logger.info(f"Resetting false buy state...", self.symbol)
+                state.false_buy_qualified = False
+                state.false_buy_reversal_detected = False
+                state.false_buy_reversal_volume = 0
+                state.false_buy_volume_ok = False
+                state.false_buy_reversal_volume_ok = False
 
         # === FALSE SELL: Check for reversal back below reference high ===
         if state.false_sell_qualified and not state.false_sell_reversal_detected:
@@ -452,9 +471,28 @@ class MultiRangeStrategyEngine:
                 self.logger.info(f"Breakout Close: {candle_breakout.close:.5f}", self.symbol)
                 self.logger.info(f"Reference High: {candle_ref.high:.5f}", self.symbol)
                 self.logger.info(f"Reversal Volume: {candle_breakout.volume}", self.symbol)
+                self.logger.info(f"Waiting for next candle to confirm reversal direction...", self.symbol)
 
+        # === FALSE SELL: Check for confirmation candle after reversal ===
+        elif state.false_sell_reversal_detected and not state.false_sell_reversal_confirmed:
+            # Confirmation: next candle continues in reversal direction (stays below reference high)
+            if candle_breakout.close < candle_ref.high:
+                state.false_sell_reversal_confirmed = True
+
+                self.logger.info(f">>> FALSE SELL REVERSAL CONFIRMED [{range_id}] <<<", self.symbol)
+                self.logger.info(f"Confirmation Close: {candle_breakout.close:.5f}", self.symbol)
+                self.logger.info(f"Reference High: {candle_ref.high:.5f}", self.symbol)
                 self.logger.info(f"*** FALSE SELL SIGNAL GENERATED [{range_id}] ***", self.symbol)
                 return self._generate_sell_signal(range_id, candle_ref, candle_breakout)
+            else:
+                # Reversal failed - price went back above reference high
+                self.logger.info(f">>> FALSE SELL REVERSAL FAILED [{range_id}] - Price back above reference high <<<", self.symbol)
+                self.logger.info(f"Resetting false sell state...", self.symbol)
+                state.false_sell_qualified = False
+                state.false_sell_reversal_detected = False
+                state.false_sell_reversal_volume = 0
+                state.false_sell_volume_ok = False
+                state.false_sell_reversal_volume_ok = False
 
         # === TRUE BUY: Check for retest and continuation ===
         if state.true_buy_qualified:
