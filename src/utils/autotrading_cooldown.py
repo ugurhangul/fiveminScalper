@@ -1,34 +1,35 @@
 """
 AutoTrading Cooldown Manager.
-Manages cooldown period when server disables AutoTrading (error 10026).
+Manages cooldown period when server disables AutoTrading.
 """
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from src.utils.logger import get_logger
+from src.constants import TradingDefaults, MT5ErrorCode
 
 
 class AutoTradingCooldown:
     """
     Manages cooldown period when AutoTrading is disabled by server.
-    
-    When error 10026 is detected, all trading operations (opening new positions
+
+    When AutoTrading disabled error is detected, all trading operations (opening new positions
     and modifying existing positions) are paused for a cooldown period.
     """
-    
-    def __init__(self, cooldown_minutes: int = 5):
+
+    def __init__(self, cooldown_minutes: int = TradingDefaults.AUTOTRADING_COOLDOWN_MINUTES):
         """
         Initialize cooldown manager.
-        
+
         Args:
-            cooldown_minutes: Duration of cooldown period in minutes (default: 5)
+            cooldown_minutes: Duration of cooldown period in minutes
         """
         self.cooldown_minutes = cooldown_minutes
         self.cooldown_until: Optional[datetime] = None
         self.lock = threading.Lock()
         self.logger = get_logger()
         self.last_log_time: Optional[datetime] = None
-        self.log_interval_seconds = 60  # Log status every 60 seconds
+        self.log_interval_seconds = TradingDefaults.COOLDOWN_LOG_INTERVAL_SECONDS
     
     def activate_cooldown(self, reason: str = "AutoTrading disabled by server"):
         """

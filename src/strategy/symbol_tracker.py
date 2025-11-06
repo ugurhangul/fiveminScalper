@@ -7,6 +7,7 @@ from src.models.data_models import SymbolStats
 from src.config.config import SymbolAdaptationConfig
 from src.strategy.symbol_performance_persistence import SymbolPerformancePersistence
 from src.utils.logger import get_logger
+from src.constants import StrategyConstants
 
 if TYPE_CHECKING:
     from src.core.mt5_connector import MT5Connector
@@ -50,7 +51,7 @@ class SymbolTracker:
                     symbol=symbol,
                     connector=connector,
                     magic_number=magic_number,
-                    days_back=30  # Look back 30 days
+                    days_back=StrategyConstants.SYMBOL_HISTORY_DAYS_BACK
                 )
 
                 if constructed_stats:

@@ -9,6 +9,9 @@ from src.core.mt5_connector import MT5Connector
 from src.execution.position_persistence import PositionPersistence
 from src.utils.logger import get_logger
 from src.utils.autotrading_cooldown import AutoTradingCooldown
+from src.constants import MT5ErrorCode, TradingDefaults, StrategyConstants, MT5FillingMode
+from src.utils.price_utils import PriceNormalizer, VolumeNormalizer
+from src.utils.trade_comment_parser import TradeCommentParser
 
 
 class OrderManager:
@@ -31,58 +34,43 @@ class OrderManager:
         self.magic_number = magic_number
         self.trade_comment = trade_comment
         self.logger = get_logger()
-        self.deviation = 10  # Price deviation in points
+        self.deviation = TradingDefaults.PRICE_DEVIATION_POINTS
 
         # Position persistence
         self.persistence = persistence if persistence is not None else PositionPersistence()
 
         # AutoTrading cooldown manager
         self.cooldown = cooldown_manager if cooldown_manager is not None else AutoTradingCooldown()
+
+        # Utility classes for price/volume normalization
+        self.price_normalizer = PriceNormalizer(connector)
+        self.volume_normalizer = VolumeNormalizer(connector)
     
     def normalize_price(self, symbol: str, price: float) -> float:
         """
         Normalize price to symbol's digits.
-        
+
         Args:
             symbol: Symbol name
             price: Price to normalize
-            
+
         Returns:
             Normalized price
         """
-        info = self.connector.get_symbol_info(symbol)
-        if info is None:
-            return price
-        
-        digits = info['digits']
-        return round(price, digits)
-    
+        return self.price_normalizer.normalize_price(symbol, price)
+
     def normalize_volume(self, symbol: str, volume: float) -> float:
         """
         Normalize volume to symbol's lot step.
-        
+
         Args:
             symbol: Symbol name
             volume: Volume to normalize
-            
+
         Returns:
             Normalized volume
         """
-        info = self.connector.get_symbol_info(symbol)
-        if info is None:
-            return volume
-        
-        min_lot = info['min_lot']
-        max_lot = info['max_lot']
-        lot_step = info['lot_step']
-        
-        # Round to lot step
-        volume = round(volume / lot_step) * lot_step
-        
-        # Clamp to min/max
-        volume = max(min_lot, min(max_lot, volume))
-        
-        return volume
+        return self.volume_normalizer.normalize_volume(symbol, volume)
     
     def execute_signal(self, signal: TradeSignal) -> Optional[int]:
         """
@@ -245,21 +233,21 @@ class OrderManager:
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 # Check for AutoTrading disabled by server
-                if result.retcode == 10026:
+                if result.retcode == MT5ErrorCode.RETCODE_SERVER_DISABLES_AT:
                     self.logger.warning(
-                        f"Trade rejected - AutoTrading disabled by server (retcode 10026)",
+                        f"Trade rejected - AutoTrading disabled by server (retcode {MT5ErrorCode.RETCODE_SERVER_DISABLES_AT})",
                         symbol
                     )
                     # Activate cooldown to prevent spam
-                    self.cooldown.activate_cooldown("AutoTrading disabled by server (error 10026)")
+                    self.cooldown.activate_cooldown(f"AutoTrading disabled by server (error {MT5ErrorCode.RETCODE_SERVER_DISABLES_AT})")
                     return None
 
                 # Check for "Only position closing allowed" restriction
-                elif result.retcode == 10044:
+                elif result.retcode == MT5ErrorCode.RETCODE_CLOSE_ONLY:
                     self.logger.symbol_condition_warning(
                         symbol=symbol,
                         condition="Position Opening Restricted",
-                        details=f"Broker restriction: Only position closing allowed (retcode 10044) - {result.comment}"
+                        details=f"Broker restriction: Only position closing allowed (retcode {MT5ErrorCode.RETCODE_CLOSE_ONLY}) - {result.comment}"
                     )
                     # This is a symbol-specific broker restriction, not a global error
                     # Don't activate cooldown, just skip this symbol for now
@@ -463,39 +451,8 @@ class OrderManager:
         Returns:
             Formatted comment string (max 31 characters for MT5)
         """
-        # Determine strategy type
-        if signal.is_true_breakout:
-            strategy = "TB"  # True Breakout
-        else:
-            strategy = "FB"  # False Breakout
-
-        # Determine confirmations
-        confirmations = []
-        if signal.volume_confirmed:
-            confirmations.append("V")
-        if signal.divergence_confirmed:
-            confirmations.append("D")
-
-        conf_str = "".join(confirmations) if confirmations else "NC"
-
-        # Include range ID if not default (for multi-range mode)
-        range_info = ""
-        if signal.range_id and signal.range_id != "default":
-            # Extract meaningful range identifier (e.g., "4H_5M" -> "4H5M")
-            range_info = signal.range_id.replace("_", "")
-
-        # Build comment: Strategy|Direction|Confirmations|Range
-        # Example: "TB|BUY|V|4H5M" or "FB|SELL|VD|15M1M"
-        if range_info:
-            comment = f"{strategy}|{signal.signal_type.value.upper()}|{conf_str}|{range_info}"
-        else:
-            comment = f"{strategy}|{signal.signal_type.value.upper()}|{conf_str}"
-
-        # MT5 has a 31 character limit for comments
-        if len(comment) > 31:
-            comment = comment[:31]
-
-        return comment
+        # Delegate to TradeCommentParser utility
+        return TradeCommentParser.generate(signal)
 
     def _get_filling_mode(self, symbol_info: dict) -> int:
         """
@@ -517,15 +474,15 @@ class OrderManager:
 
         # Check supported modes in order of preference: FOK > IOC > RETURN
         # FOK (Fill or Kill) - most restrictive, best for market orders
-        if filling_mode & 1:  # SYMBOL_FILLING_FOK (bit 0)
+        if filling_mode & MT5FillingMode.SYMBOL_FILLING_FOK:
             return mt5.ORDER_FILLING_FOK
 
         # IOC (Immediate or Cancel) - partial fills allowed
-        elif filling_mode & 2:  # SYMBOL_FILLING_IOC (bit 1)
+        elif filling_mode & MT5FillingMode.SYMBOL_FILLING_IOC:
             return mt5.ORDER_FILLING_IOC
 
         # RETURN - can remain in order book
-        elif filling_mode & 4:  # SYMBOL_FILLING_RETURN (bit 2)
+        elif filling_mode & MT5FillingMode.SYMBOL_FILLING_RETURN:
             return mt5.ORDER_FILLING_RETURN
 
         # Fallback to FOK if no mode is supported (shouldn't happen)
@@ -631,7 +588,7 @@ class OrderManager:
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 # Log additional context for common errors
-                if result.retcode == 10016:  # Invalid stops
+                if result.retcode == MT5ErrorCode.RETCODE_INVALID_STOPS:
                     self.logger.error(
                         f"Modify failed for position {ticket}: retcode={result.retcode}, "
                         f"comment='{result.comment}'",
@@ -654,23 +611,23 @@ class OrderManager:
                         f"  SL distance: {sl_distance_points:.0f} pts, TP distance: {tp_distance_points:.0f} pts",
                         symbol
                     )
-                elif result.retcode == 10026:  # AutoTrading disabled by server
+                elif result.retcode == MT5ErrorCode.RETCODE_SERVER_DISABLES_AT:
                     self.logger.warning(
-                        f"Modify blocked - AutoTrading disabled by server (retcode 10026)",
+                        f"Modify blocked - AutoTrading disabled by server (retcode {MT5ErrorCode.RETCODE_SERVER_DISABLES_AT})",
                         symbol
                     )
                     # Activate cooldown to prevent spam
-                    self.cooldown.activate_cooldown("AutoTrading disabled by server (error 10026)")
+                    self.cooldown.activate_cooldown(f"AutoTrading disabled by server (error {MT5ErrorCode.RETCODE_SERVER_DISABLES_AT})")
                     # Return RETRY to keep position in tracking
                     return "RETRY"
-                elif result.retcode == 10027:  # Autotrading disabled by terminal
+                elif result.retcode == MT5ErrorCode.RETCODE_CLIENT_DISABLES_AT:
                     self.logger.error(
                         f"Modify failed for position {ticket}: retcode={result.retcode}, "
                         f"comment='{result.comment}'",
                         symbol
                     )
                     self.logger.error("  Autotrading is disabled on this account", symbol)
-                elif result.retcode == 10025:  # No changes
+                elif result.retcode == MT5ErrorCode.RETCODE_NO_CHANGES:
                     self.logger.debug(
                         f"Modify skipped for position {ticket}: No changes detected by broker",
                         symbol

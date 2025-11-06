@@ -72,7 +72,7 @@ def test_basic_persistence():
     
     assert "12345" in data, "Position not in file"
     assert data["12345"]["symbol"] == "EURUSD", "Symbol mismatch"
-    assert data["12345"]["position_type"] == "BUY", "Position type mismatch"
+    assert data["12345"]["position_type"] == "buy", "Position type mismatch"  # PositionType.BUY.value is lowercase
     print("✓ Position data correct in file")
     
     # Create new persistence instance (simulates restart)

@@ -10,6 +10,8 @@ from typing import List, Optional, Dict, Tuple
 from src.models.data_models import CandleData, PositionInfo, PositionType
 from src.config.config import MT5Config
 from src.utils.logger import get_logger
+from src.utils.timeframe_mapper import TimeframeMapper
+from src.constants import StrategyConstants
 
 
 class MT5Connector:
@@ -95,19 +97,9 @@ class MT5Connector:
         if not self.is_connected:
             self.logger.error("Not connected to MT5")
             return None
-        
+
         # Map timeframe string to MT5 constant
-        timeframe_map = {
-            'M1': mt5.TIMEFRAME_M1,
-            'M5': mt5.TIMEFRAME_M5,
-            'M15': mt5.TIMEFRAME_M15,
-            'M30': mt5.TIMEFRAME_M30,
-            'H1': mt5.TIMEFRAME_H1,
-            'H4': mt5.TIMEFRAME_H4,
-            'D1': mt5.TIMEFRAME_D1,
-        }
-        
-        tf = timeframe_map.get(timeframe)
+        tf = TimeframeMapper.to_mt5_constant(timeframe)
         if tf is None:
             self.logger.error(f"Invalid timeframe: {timeframe}")
             return None
@@ -372,8 +364,8 @@ class MT5Connector:
             return None
 
         try:
-            # Request history for the last 7 days
-            from_date = datetime.now() - timedelta(days=7)
+            # Request history for the last N days
+            from_date = datetime.now() - timedelta(days=StrategyConstants.HISTORY_DAYS_BACK)
             to_date = datetime.now()
 
             # Get history deals

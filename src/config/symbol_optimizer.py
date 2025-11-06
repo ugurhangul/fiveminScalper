@@ -4,6 +4,7 @@ Ported from FMS_SymbolOptimization.mqh
 """
 from typing import Dict, Optional
 from src.models.data_models import SymbolCategory, SymbolParameters
+from src.utils.symbol_category_detector import SymbolCategoryDetector
 
 
 class SymbolOptimizer:
@@ -226,37 +227,14 @@ class SymbolOptimizer:
         Returns:
             SymbolCategory enum value
         """
-        # PRIMARY: Try MT5 native category first if provided
-        if mt5_category:
-            mapped_category = cls.MT5_CATEGORY_MAPPING.get(mt5_category)
-            if mapped_category:
-                return mapped_category
+        # Delegate to SymbolCategoryDetector utility
+        return SymbolCategoryDetector.detect(symbol, mt5_category)
 
-        # FALLBACK: Use pattern matching on symbol name
-        symbol_upper = symbol.upper()
-
-        for category, patterns in cls.CATEGORY_PATTERNS.items():
-            for pattern in patterns:
-                if pattern in symbol_upper:
-                    return category
-
-        return SymbolCategory.UNKNOWN
-    
     @classmethod
     def get_category_name(cls, category: SymbolCategory) -> str:
         """Get human-readable category name"""
-        names = {
-            SymbolCategory.MAJOR_FOREX: "Major Forex",
-            SymbolCategory.MINOR_FOREX: "Minor Forex",
-            SymbolCategory.EXOTIC_FOREX: "Exotic Forex",
-            SymbolCategory.METALS: "Precious Metals",
-            SymbolCategory.INDICES: "Stock Indices",
-            SymbolCategory.CRYPTO: "Cryptocurrencies",
-            SymbolCategory.COMMODITIES: "Commodities",
-            SymbolCategory.STOCKS: "Stocks",
-            SymbolCategory.UNKNOWN: "Unknown"
-        }
-        return names.get(category, "Unknown")
+        # Delegate to SymbolCategoryDetector utility
+        return SymbolCategoryDetector.get_category_name(category)
     
     @classmethod
     def get_parameters(cls, category: SymbolCategory, default_params: SymbolParameters) -> SymbolParameters:

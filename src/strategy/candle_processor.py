@@ -8,6 +8,7 @@ import pandas as pd
 from src.models.data_models import CandleData, FourHourCandle
 from src.core.mt5_connector import MT5Connector
 from src.utils.logger import get_logger
+from src.constants import StrategyConstants
 
 
 class CandleProcessor:
@@ -48,8 +49,8 @@ class CandleProcessor:
             True if new 4H candle detected
         """
         # Get latest 4H candle
-        df = self.connector.get_candles(self.symbol, 'H4', count=2)
-        if df is None or len(df) < 2:
+        df = self.connector.get_candles(self.symbol, 'H4', count=StrategyConstants.CANDLE_COUNT_4H)
+        if df is None or len(df) < StrategyConstants.CANDLE_COUNT_4H:
             return False
         
         # Get the last closed 4H candle
@@ -63,7 +64,7 @@ class CandleProcessor:
                 # The second 4H candle opens at 04:00 UTC and closes at 08:00 UTC
                 # Chart displays opening time (04:00 UTC)
                 # This matches the MQL5 code which checks for hour == 4
-                if candle_time.hour == 4 and candle_time.minute == 0:
+                if candle_time.hour == StrategyConstants.SECOND_4H_CANDLE_HOUR and candle_time.minute == StrategyConstants.SECOND_4H_CANDLE_MINUTE:
                     self.last_4h_candle_time = candle_time
                     self._update_4h_candle(last_candle)
 
@@ -101,8 +102,8 @@ class CandleProcessor:
             True if new 5M candle detected
         """
         # Get latest 5M candle
-        df = self.connector.get_candles(self.symbol, 'M5', count=2)
-        if df is None or len(df) < 2:
+        df = self.connector.get_candles(self.symbol, 'M5', count=StrategyConstants.CANDLE_COUNT_5M)
+        if df is None or len(df) < StrategyConstants.CANDLE_COUNT_5M:
             return False
         
         # Get the last closed 5M candle
@@ -128,7 +129,7 @@ class CandleProcessor:
         """
         return self.connector.get_latest_candle(self.symbol, 'M5')
     
-    def get_5m_candles(self, count: int = 100) -> Optional[pd.DataFrame]:
+    def get_5m_candles(self, count: int = StrategyConstants.CANDLE_COUNT_5M_DEFAULT) -> Optional[pd.DataFrame]:
         """
         Get historical 5M candles.
         
@@ -157,8 +158,8 @@ class CandleProcessor:
         processing old candles that occurred before the bot started.
         """
         # Get latest 5M candle
-        df = self.connector.get_candles(self.symbol, 'M5', count=2)
-        if df is None or len(df) < 2:
+        df = self.connector.get_candles(self.symbol, 'M5', count=StrategyConstants.CANDLE_COUNT_5M)
+        if df is None or len(df) < StrategyConstants.CANDLE_COUNT_5M:
             self.logger.warning("Could not retrieve 5M candles for initialization", self.symbol)
             return
 
@@ -188,14 +189,14 @@ class CandleProcessor:
         NOTE: We look for the candle that opens at 04:00 UTC (chart shows 04:00, closes at 08:00 UTC).
         """
         # Get recent 4H candles
-        df = self.connector.get_candles(self.symbol, 'H4', count=7)
-        if df is None or len(df) < 2:
+        df = self.connector.get_candles(self.symbol, 'H4', count=StrategyConstants.CANDLE_COUNT_4H_INIT)
+        if df is None or len(df) < StrategyConstants.CANDLE_COUNT_4H:
             self.logger.warning("Could not retrieve 4H candles for initialization", self.symbol)
             return
 
         # Search backwards for the most recent valid candle
         # Skip index 0 (current forming candle), start from index 1 (last closed)
-        for i in range(1, min(7, len(df))):
+        for i in range(1, min(StrategyConstants.CANDLE_COUNT_4H_INIT, len(df))):
             candle = df.iloc[-(i+1)]  # Get candle from end, skipping current
             candle_time = candle['time']
 
@@ -203,7 +204,7 @@ class CandleProcessor:
                 # Check if this is the second 4H candle (opens 04:00, closes 08:00)
                 # Chart shows opening time (04:00 UTC)
                 # This matches the MQL5 code which checks for hour == 4
-                if candle_time.hour == 4 and candle_time.minute == 0:
+                if candle_time.hour == StrategyConstants.SECOND_4H_CANDLE_HOUR and candle_time.minute == StrategyConstants.SECOND_4H_CANDLE_MINUTE:
                     self.last_4h_candle_time = candle_time
                     self._update_4h_candle(candle)
 
@@ -266,7 +267,7 @@ class CandleProcessor:
         current_time = datetime.now(timezone.utc)
 
         # Check if it's within the first 5 minutes of a new day
-        if current_time.hour == 0 and current_time.minute < 5:
+        if current_time.hour == StrategyConstants.NEW_DAY_HOUR and current_time.minute < StrategyConstants.NEW_DAY_MINUTE_THRESHOLD:
             return True
 
         return False
@@ -280,7 +281,7 @@ class CandleProcessor:
             True if in restricted period (04:00-08:00 UTC)
         """
         current_time = datetime.now(timezone.utc)
-        return current_time.hour >= 4 and current_time.hour < 8
+        return current_time.hour >= StrategyConstants.RESTRICTED_PERIOD_START_HOUR and current_time.hour < StrategyConstants.RESTRICTED_PERIOD_END_HOUR
     
     def get_time_until_next_4h_candle(self) -> Optional[timedelta]:
         """
@@ -295,8 +296,8 @@ class CandleProcessor:
             current_hour = current_time.hour
 
             # Find next 4H boundary
-            next_hour = ((current_hour // 4) + 1) * 4
-            if next_hour >= 24:
+            next_hour = ((current_hour // StrategyConstants.FOUR_HOUR_INTERVAL) + 1) * StrategyConstants.FOUR_HOUR_INTERVAL
+            if next_hour >= StrategyConstants.HOURS_PER_DAY:
                 next_hour = 0
                 next_day = current_time + timedelta(days=1)
                 next_candle_time = next_day.replace(hour=next_hour, minute=0, second=0, microsecond=0)

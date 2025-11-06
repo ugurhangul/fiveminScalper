@@ -17,6 +17,7 @@ from src.strategy.symbol_performance_persistence import SymbolPerformancePersist
 from src.models.data_models import PositionInfo, PositionType
 from src.config.config import config
 from src.utils.logger import get_logger
+from src.constants import TradingDefaults
 
 
 class TradingController:
@@ -238,8 +239,8 @@ class TradingController:
                 # Update known positions
                 known_positions = current_tickets
 
-                # Log statistics every 10 seconds
-                if (datetime.now(timezone.utc) - last_stats_log).total_seconds() >= 10:
+                # Log statistics every N seconds
+                if (datetime.now(timezone.utc) - last_stats_log).total_seconds() >= TradingDefaults.STATISTICS_LOG_INTERVAL_SECONDS_SHORT:
                     self._log_position_statistics(positions)
                     last_stats_log = datetime.now(timezone.utc)
 
@@ -343,7 +344,7 @@ class TradingController:
         # Wait for all threads to finish
         for symbol, thread in self.threads.items():
             self.logger.info(f"Waiting for {symbol} thread to stop...", symbol)
-            thread.join(timeout=5)
+            thread.join(timeout=TradingDefaults.THREAD_JOIN_TIMEOUT_SECONDS)
         
         # Shutdown all strategies
         for symbol, strategy in self.strategies.items():

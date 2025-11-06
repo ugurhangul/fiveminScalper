@@ -16,6 +16,7 @@ from src.execution.trade_manager import TradeManager
 from src.indicators.technical_indicators import TechnicalIndicators
 from src.risk.risk_manager import RiskManager
 from src.utils.logger import init_logger, get_logger
+from src.constants import FilePaths
 
 
 class TradingBot:
@@ -46,11 +47,11 @@ class TradingBot:
         self.connector = MT5Connector(config.mt5)
 
         # Initialize position persistence (shared between OrderManager and RiskManager)
-        self.persistence = PositionPersistence(data_dir="data")
+        self.persistence = PositionPersistence(data_dir=FilePaths.DATA_DIR)
 
         # Initialize symbol performance persistence (shared across all symbols)
         from src.strategy.symbol_performance_persistence import SymbolPerformancePersistence
-        self.symbol_persistence = SymbolPerformancePersistence(data_dir="data")
+        self.symbol_persistence = SymbolPerformancePersistence(data_dir=FilePaths.DATA_DIR)
 
         self.order_manager = OrderManager(
             connector=self.connector,

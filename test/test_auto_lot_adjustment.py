@@ -4,22 +4,22 @@ This script demonstrates the new auto-adjustment feature.
 """
 from src.core.mt5_connector import MT5Connector
 from src.risk.risk_manager import RiskManager
-from src.config.config import RiskConfig
+from src.config.config import RiskConfig, MT5Config, config
 from src.utils.logger import get_logger
 
 def test_auto_lot_adjustment():
     """Test automatic lot size adjustment"""
     logger = get_logger()
-    
+
     # Create mock risk config
     risk_config = RiskConfig()
     risk_config.risk_percent_per_trade = 3.0  # 3% risk per trade
     risk_config.max_positions = 3
     risk_config.min_lot_size = 0.01
     risk_config.max_lot_size = 100.0
-    
-    # Initialize MT5 connector
-    connector = MT5Connector()
+
+    # Initialize MT5 connector with config
+    connector = MT5Connector(config.mt5)
     if not connector.connect():
         logger.error("Failed to connect to MT5")
         return

@@ -7,6 +7,8 @@ from src.core.mt5_connector import MT5Connector
 from src.config.config import RiskConfig
 from src.models.data_models import PositionType
 from src.utils.logger import get_logger
+from src.utils.price_utils import VolumeNormalizer, CurrencyConverter
+from src.utils.trade_comment_parser import TradeCommentParser
 
 
 class RiskManager:
@@ -26,6 +28,10 @@ class RiskManager:
         self.risk_config = risk_config
         self.logger = get_logger()
         self.persistence = persistence
+
+        # Utility classes for volume normalization and currency conversion
+        self.volume_normalizer = VolumeNormalizer(connector)
+        self.currency_converter = CurrencyConverter(connector)
     
     def calculate_lot_size(self, symbol: str, entry_price: float, 
                           stop_loss: float) -> float:
@@ -81,23 +87,13 @@ class RiskManager:
         )
 
         # Convert tick value to account currency if needed
-        original_tick_value = tick_value
         if currency_profit != account_currency and account_currency and currency_profit != 'UNKNOWN':
-            conversion_rate = self.connector.get_currency_conversion_rate(currency_profit, account_currency)
-            if conversion_rate is not None:
-                tick_value = tick_value * conversion_rate
-                self.logger.info(
-                    f"Currency conversion applied: {currency_profit} -> {account_currency}, "
-                    f"Rate={conversion_rate:.5f}, TickValue: {original_tick_value:.5f} -> {tick_value:.5f}",
-                    symbol
-                )
-            else:
-                self.logger.error(
-                    f"Failed to get conversion rate from {currency_profit} to {account_currency}. "
-                    f"Risk calculation may be incorrect!",
-                    symbol
-                )
-                # Continue with original tick_value but log the issue
+            converted_tick_value = self.currency_converter.convert_with_logging(
+                tick_value, currency_profit, account_currency, symbol
+            )
+            if converted_tick_value is not None:
+                tick_value = converted_tick_value
+            # If conversion fails, continue with original tick_value (error already logged)
 
         # Calculate stop loss distance in points
         # This matches MQL5: stopLossPoints = MathAbs(entryPrice - stopLoss) / point
@@ -112,29 +108,27 @@ class RiskManager:
         # tick_value already represents the value per lot per point
         lot_size_raw = risk_amount / (sl_distance_in_points * tick_value)
 
-        # Normalize to lot step
-        min_lot = symbol_info['min_lot']
-        max_lot = symbol_info['max_lot']
-        lot_step = symbol_info['lot_step']
-
-        self.logger.debug(
-            f"Lot size calculation: raw={lot_size_raw:.4f}, lot_step={lot_step}, "
-            f"symbol_min={min_lot}, symbol_max={max_lot}",
-            symbol
-        )
-
-        # Round to lot step
-        lot_size = round(lot_size_raw / lot_step) * lot_step
-        self.logger.debug(f"After rounding to lot_step: {lot_size:.4f}", symbol)
-
-        # Apply min/max constraints
-        lot_size_before_symbol_clamp = lot_size
-        lot_size = max(min_lot, min(max_lot, lot_size))
-        if lot_size != lot_size_before_symbol_clamp:
+        # Get volume limits for logging
+        limits = self.volume_normalizer.get_volume_limits(symbol)
+        if limits:
             self.logger.debug(
-                f"After symbol min/max clamp: {lot_size_before_symbol_clamp:.4f} -> {lot_size:.4f}",
+                f"Lot size calculation: raw={lot_size_raw:.4f}, lot_step={limits['lot_step']}, "
+                f"symbol_min={limits['min_lot']}, symbol_max={limits['max_lot']}",
                 symbol
             )
+
+        # Normalize to lot step and apply min/max constraints
+        lot_size = self.volume_normalizer.normalize_volume(symbol, lot_size_raw)
+        self.logger.debug(f"After normalization: {lot_size:.4f}", symbol)
+
+        # Get volume limits for user constraints
+        limits = self.volume_normalizer.get_volume_limits(symbol)
+        if limits is None:
+            self.logger.error("Failed to get volume limits", symbol)
+            return 0.0
+
+        min_lot = limits['min_lot']
+        max_lot = limits['max_lot']
 
         # Apply user-defined min/max
         # Note: If min_lot_size is 0 or negative, use symbol's min_lot
@@ -305,17 +299,16 @@ class RiskManager:
 
         # Get account currency and convert tick value if needed
         account_currency = self.connector.get_account_currency()
-        original_tick_value = tick_value
 
         if currency_profit != account_currency and account_currency and currency_profit != 'UNKNOWN':
-            conversion_rate = self.connector.get_currency_conversion_rate(currency_profit, account_currency)
-            if conversion_rate is not None:
-                tick_value = tick_value * conversion_rate
+            converted_tick_value = self.currency_converter.convert(tick_value, currency_profit, account_currency)
+            if converted_tick_value is not None:
                 self.logger.debug(
                     f"Risk validation currency conversion: {currency_profit} -> {account_currency}, "
-                    f"Rate={conversion_rate:.5f}, TickValue: {original_tick_value:.5f} -> {tick_value:.5f}",
+                    f"TickValue: {tick_value:.5f} -> {converted_tick_value:.5f}",
                     symbol
                 )
+                tick_value = converted_tick_value
 
         # Calculate SL distance in points (matches MQL5 formula)
         sl_distance_in_points = sl_distance / point if point > 0 else sl_distance
@@ -349,13 +342,10 @@ class RiskManager:
             target_risk_amount = balance * (self.risk_config.risk_percent_per_trade / 100.0)
 
             # Recalculate lot size: lotSize = riskAmount / (stopLossPoints * tickValue)
-            adjusted_lot_size = target_risk_amount / (sl_distance_in_points * tick_value)
+            adjusted_lot_size_raw = target_risk_amount / (sl_distance_in_points * tick_value)
 
-            # Normalize to lot step
-            adjusted_lot_size = round(adjusted_lot_size / lot_step) * lot_step
-
-            # Apply min/max constraints
-            adjusted_lot_size = max(min_lot, min(max_lot, adjusted_lot_size))
+            # Normalize to lot step and apply min/max constraints
+            adjusted_lot_size = self.volume_normalizer.normalize_volume(symbol, adjusted_lot_size_raw)
 
             # Apply user-defined minimum and maximum
             user_min_lot = self.risk_config.min_lot_size if self.risk_config.min_lot_size > 0 else min_lot
@@ -433,15 +423,16 @@ class RiskManager:
                     # Check if position type matches
                     persisted_type = PositionType(pos_data['position_type'])
                     if persisted_type == position_type:
-                        # Extract strategy type and range from comment (format: "TB|BUY|V|4H5M")
+                        # Extract strategy type and range from comment using TradeCommentParser
                         comment = pos_data.get('comment', '')
-                        parts = comment.split('|') if '|' in comment else []
-                        persisted_strategy = parts[0] if len(parts) > 0 else ''
-                        persisted_range = parts[3] if len(parts) > 3 else ''
 
-                        # Build match criteria
-                        strategy_match = (not strategy_type) or (persisted_strategy == strategy_type)
-                        range_match = (not range_id) or (persisted_range == range_id.replace('_', ''))
+                        # Build match criteria using TradeCommentParser
+                        strategy_match = (not strategy_type) or TradeCommentParser.matches_strategy_and_range(
+                            comment, strategy_type=strategy_type, range_id=None
+                        )
+                        range_match = (not range_id) or TradeCommentParser.matches_strategy_and_range(
+                            comment, strategy_type=None, range_id=range_id
+                        )
 
                         # Only warn if SAME strategy type AND range
                         if strategy_match and range_match:
@@ -470,17 +461,12 @@ class RiskManager:
             if strategy_type or range_id:
                 filtered_positions = []
                 for pos in same_type_positions:
-                    # Extract strategy type and range from comment (format: "TB|BUY|V|4H5M")
-                    parts = pos.comment.split('|') if '|' in pos.comment else []
-                    comment_strategy = parts[0] if len(parts) > 0 else ''
-                    comment_range = parts[3] if len(parts) > 3 else ''
-
-                    # Build match criteria
-                    strategy_match = (not strategy_type) or (comment_strategy == strategy_type)
-                    range_match = (not range_id) or (comment_range == range_id.replace('_', ''))
-
-                    # Only include if both criteria match
-                    if strategy_match and range_match:
+                    # Use TradeCommentParser to check if comment matches criteria
+                    if TradeCommentParser.matches_strategy_and_range(
+                        pos.comment,
+                        strategy_type=strategy_type,
+                        range_id=range_id
+                    ):
                         filtered_positions.append(pos)
                 same_type_positions = filtered_positions
 

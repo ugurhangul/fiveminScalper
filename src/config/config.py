@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import time as dt_time
 from dotenv import load_dotenv
 from src.models.data_models import SymbolCategory, SymbolParameters, RangeConfig
+from src.constants import EnvVars, TradingDefaults, FilePaths
+from src.utils.env_parser import EnvParser
 
 
 # Load environment variables
@@ -175,125 +177,117 @@ class TradingConfig:
     def __init__(self):
         # MT5 Configuration
         self.mt5 = MT5Config(
-            login=int(os.getenv('MT5_LOGIN', '0')),
-            password=os.getenv('MT5_PASSWORD', ''),
-            server=os.getenv('MT5_SERVER', '')
+            login=EnvParser.get_int(EnvVars.MT5_LOGIN, 0),
+            password=EnvParser.get_string(EnvVars.MT5_PASSWORD, ''),
+            server=EnvParser.get_string(EnvVars.MT5_SERVER, '')
         )
 
         # Symbols to trade - will be populated from Market Watch after MT5 connection
         self.symbols: List[str] = []
-        
+
         # Strategy settings
         self.strategy = StrategyConfig(
-            entry_offset_percent=float(os.getenv('ENTRY_OFFSET_PERCENT', '0.01')),
-            stop_loss_offset_percent=float(os.getenv('STOP_LOSS_OFFSET_PERCENT', '0.02')),
-            stop_loss_offset_points=int(os.getenv('STOP_LOSS_OFFSET_POINTS', '100')),
-            use_point_based_sl=os.getenv('USE_POINT_BASED_SL', 'true').lower() == 'true',
-            risk_reward_ratio=float(os.getenv('RISK_REWARD_RATIO', '2.0'))
+            entry_offset_percent=EnvParser.get_float(EnvVars.ENTRY_OFFSET_PERCENT, 0.01),
+            stop_loss_offset_percent=EnvParser.get_float(EnvVars.STOP_LOSS_OFFSET_PERCENT, 0.02),
+            stop_loss_offset_points=EnvParser.get_int(EnvVars.STOP_LOSS_OFFSET_POINTS, 100),
+            use_point_based_sl=EnvParser.get_bool(EnvVars.USE_POINT_BASED_SL, True),
+            risk_reward_ratio=EnvParser.get_float(EnvVars.RISK_REWARD_RATIO, 2.0)
         )
-        
+
         # Risk management
-        # Parse MIN_LOT_SIZE: if "MIN", use 0 to signal using symbol's minimum
-        min_lot_str = os.getenv('MIN_LOT_SIZE', '0.01').strip().upper()
-        min_lot_value = 0.0 if min_lot_str == 'MIN' else float(min_lot_str)
-
-        # Parse MAX_LOT_SIZE: if "MIN", use 0 to signal using symbol's minimum
-        max_lot_str = os.getenv('MAX_LOT_SIZE', '0.01').strip().upper()
-        max_lot_value = 0.0 if max_lot_str == 'MIN' else float(max_lot_str)
-
         self.risk = RiskConfig(
-            risk_percent_per_trade=float(os.getenv('RISK_PERCENT_PER_TRADE', '1.0')),
-            max_lot_size=max_lot_value,
-            min_lot_size=min_lot_value,
-            max_positions=int(os.getenv('MAX_POSITIONS', '1000'))
+            risk_percent_per_trade=EnvParser.get_float(EnvVars.RISK_PERCENT_PER_TRADE, 1.0),
+            max_lot_size=EnvParser.get_lot_size(EnvVars.MAX_LOT_SIZE, 0.01),
+            min_lot_size=EnvParser.get_lot_size(EnvVars.MIN_LOT_SIZE, 0.01),
+            max_positions=EnvParser.get_int(EnvVars.MAX_POSITIONS, 1000)
         )
-        
+
         # Trailing stop
         self.trailing_stop = TrailingStopConfig(
-            use_trailing_stop=os.getenv('USE_TRAILING_STOP', 'false').lower() == 'true',
-            trailing_stop_trigger_rr=float(os.getenv('TRAILING_STOP_TRIGGER_RR', '1.5')),
-            trailing_stop_distance=float(os.getenv('TRAILING_STOP_DISTANCE', '50.0')),
-            use_atr_trailing=os.getenv('USE_ATR_TRAILING', 'false').lower() == 'true',
-            atr_period=int(os.getenv('ATR_PERIOD', '14')),
-            atr_multiplier=float(os.getenv('ATR_MULTIPLIER', '2.0')),
-            atr_timeframe=os.getenv('ATR_TIMEFRAME', 'H4')
+            use_trailing_stop=EnvParser.get_bool(EnvVars.USE_TRAILING_STOP, False),
+            trailing_stop_trigger_rr=EnvParser.get_float(EnvVars.TRAILING_STOP_TRIGGER_RR, 1.5),
+            trailing_stop_distance=EnvParser.get_float(EnvVars.TRAILING_STOP_DISTANCE, 50.0),
+            use_atr_trailing=EnvParser.get_bool(EnvVars.USE_ATR_TRAILING, False),
+            atr_period=EnvParser.get_int(EnvVars.ATR_PERIOD, 14),
+            atr_multiplier=EnvParser.get_float(EnvVars.ATR_MULTIPLIER, 2.0),
+            atr_timeframe=EnvParser.get_string(EnvVars.ATR_TIMEFRAME, 'H4')
         )
-        
+
         # Trading hours
         self.trading_hours = TradingHoursConfig(
-            use_trading_hours=os.getenv('USE_TRADING_HOURS', 'false').lower() == 'true',
-            start_hour=int(os.getenv('START_HOUR', '0')),
-            end_hour=int(os.getenv('END_HOUR', '23'))
+            use_trading_hours=EnvParser.get_bool(EnvVars.USE_TRADING_HOURS, False),
+            start_hour=EnvParser.get_int(EnvVars.START_HOUR, 0),
+            end_hour=EnvParser.get_int(EnvVars.END_HOUR, 23)
         )
-        
+
         # Advanced settings
         self.advanced = AdvancedConfig(
-            use_breakeven=os.getenv('USE_BREAKEVEN', 'true').lower() == 'true',
-            breakeven_trigger_rr=float(os.getenv('BREAKEVEN_TRIGGER_RR', '1.0')),
-            use_only_00_utc_candle=os.getenv('USE_ONLY_00_UTC_CANDLE', 'true').lower() == 'true',
-            use_multi_range_mode=os.getenv('USE_MULTI_RANGE_MODE', 'true').lower() == 'true',
-            magic_number=int(os.getenv('MAGIC_NUMBER', '123456')),
-            trade_comment=os.getenv('TRADE_COMMENT', '5MinScalper')
+            use_breakeven=EnvParser.get_bool(EnvVars.USE_BREAKEVEN, True),
+            breakeven_trigger_rr=EnvParser.get_float(EnvVars.BREAKEVEN_TRIGGER_RR, 1.0),
+            use_only_00_utc_candle=EnvParser.get_bool(EnvVars.USE_ONLY_00_UTC_CANDLE, True),
+            use_multi_range_mode=EnvParser.get_bool(EnvVars.USE_MULTI_RANGE_MODE, True),
+            magic_number=EnvParser.get_int(EnvVars.MAGIC_NUMBER, 123456),
+            trade_comment=EnvParser.get_string(EnvVars.TRADE_COMMENT, '5MinScalper')
         )
 
         # Range configurations for multi-range mode
         self.range_config = RangeConfigSettings(
-            enabled=os.getenv('MULTI_RANGE_ENABLED', 'true').lower() == 'true'
+            enabled=EnvParser.get_bool(EnvVars.MULTI_RANGE_ENABLED, True)
         )
-        
+
         # Logging
         self.logging = LoggingConfig(
-            enable_detailed_logging=os.getenv('ENABLE_DETAILED_LOGGING', 'true').lower() == 'true',
-            log_to_file=os.getenv('LOG_TO_FILE', 'true').lower() == 'true',
-            log_to_console=os.getenv('LOG_TO_CONSOLE', 'true').lower() == 'true',
-            log_level=os.getenv('LOG_LEVEL', 'INFO'),
-            log_active_trades_every_5min=os.getenv('LOG_ACTIVE_TRADES_EVERY_5MIN', 'true').lower() == 'true'
+            enable_detailed_logging=EnvParser.get_bool(EnvVars.ENABLE_DETAILED_LOGGING, True),
+            log_to_file=EnvParser.get_bool(EnvVars.LOG_TO_FILE, True),
+            log_to_console=EnvParser.get_bool(EnvVars.LOG_TO_CONSOLE, True),
+            log_level=EnvParser.get_string(EnvVars.LOG_LEVEL, 'INFO'),
+            log_active_trades_every_5min=EnvParser.get_bool(EnvVars.LOG_ACTIVE_TRADES_EVERY_5MIN, True)
         )
-        
+
         # Adaptive filters
         # NOTE: Defaults changed for dual strategy system - confirmations must stay enabled
         self.adaptive_filters = AdaptiveFilterConfig(
-            use_adaptive_filters=os.getenv('USE_ADAPTIVE_FILTERS', 'false').lower() == 'true',  # Changed default to 'false'
-            adaptive_loss_trigger=int(os.getenv('ADAPTIVE_LOSS_TRIGGER', '3')),
-            adaptive_win_recovery=int(os.getenv('ADAPTIVE_WIN_RECOVERY', '2')),
-            start_with_filters_enabled=os.getenv('START_WITH_FILTERS_ENABLED', 'true').lower() == 'true'  # Changed default to 'true'
+            use_adaptive_filters=EnvParser.get_bool(EnvVars.USE_ADAPTIVE_FILTERS, False),  # Changed default to False
+            adaptive_loss_trigger=EnvParser.get_int(EnvVars.ADAPTIVE_LOSS_TRIGGER, 3),
+            adaptive_win_recovery=EnvParser.get_int(EnvVars.ADAPTIVE_WIN_RECOVERY, 2),
+            start_with_filters_enabled=EnvParser.get_bool(EnvVars.START_WITH_FILTERS_ENABLED, True)  # Changed default to True
         )
-        
+
         # Symbol adaptation
         self.symbol_adaptation = SymbolAdaptationConfig(
-            use_symbol_adaptation=os.getenv('USE_SYMBOL_ADAPTATION', 'true').lower() == 'true',
-            min_trades_for_evaluation=int(os.getenv('SYMBOL_MIN_TRADES', '10')),
-            min_win_rate=float(os.getenv('SYMBOL_MIN_WIN_RATE', '30.0')),
-            max_total_loss=float(os.getenv('SYMBOL_MAX_TOTAL_LOSS', '100.0')),
-            max_consecutive_losses=int(os.getenv('SYMBOL_MAX_CONSECUTIVE_LOSSES', '3')),
-            max_drawdown_percent=float(os.getenv('SYMBOL_MAX_DRAWDOWN_PERCENT', '15.0')),
-            cooling_period_hours=int(os.getenv('SYMBOL_COOLING_PERIOD_HOURS', '168')),
-            reset_weekly=os.getenv('SYMBOL_RESET_WEEKLY', 'true').lower() == 'true',
-            weekly_reset_day=int(os.getenv('SYMBOL_WEEKLY_RESET_DAY', '0')),
-            weekly_reset_hour=int(os.getenv('SYMBOL_WEEKLY_RESET_HOUR', '0'))
+            use_symbol_adaptation=EnvParser.get_bool(EnvVars.USE_SYMBOL_ADAPTATION, True),
+            min_trades_for_evaluation=EnvParser.get_int(EnvVars.SYMBOL_MIN_TRADES, 10),
+            min_win_rate=EnvParser.get_float(EnvVars.SYMBOL_MIN_WIN_RATE, 30.0),
+            max_total_loss=EnvParser.get_float(EnvVars.SYMBOL_MAX_TOTAL_LOSS, 100.0),
+            max_consecutive_losses=EnvParser.get_int(EnvVars.SYMBOL_MAX_CONSECUTIVE_LOSSES, 3),
+            max_drawdown_percent=EnvParser.get_float(EnvVars.SYMBOL_MAX_DRAWDOWN_PERCENT, 15.0),
+            cooling_period_hours=EnvParser.get_int(EnvVars.SYMBOL_COOLING_PERIOD_HOURS, 168),
+            reset_weekly=EnvParser.get_bool(EnvVars.SYMBOL_RESET_WEEKLY, True),
+            weekly_reset_day=EnvParser.get_int(EnvVars.SYMBOL_WEEKLY_RESET_DAY, 0),
+            weekly_reset_hour=EnvParser.get_int(EnvVars.SYMBOL_WEEKLY_RESET_HOUR, 0)
         )
-        
+
         # Volume confirmation
         self.volume = VolumeConfig(
-            breakout_volume_max_multiplier=float(os.getenv('BREAKOUT_VOLUME_MAX_MULTIPLIER', '1.0')),
-            reversal_volume_min_multiplier=float(os.getenv('REVERSAL_VOLUME_MIN_MULTIPLIER', '1.5')),
-            volume_average_period=int(os.getenv('VOLUME_AVERAGE_PERIOD', '20'))
+            breakout_volume_max_multiplier=EnvParser.get_float(EnvVars.BREAKOUT_VOLUME_MAX_MULTIPLIER, 1.0),
+            reversal_volume_min_multiplier=EnvParser.get_float(EnvVars.REVERSAL_VOLUME_MIN_MULTIPLIER, 1.5),
+            volume_average_period=EnvParser.get_int(EnvVars.VOLUME_AVERAGE_PERIOD, 20)
         )
-        
+
         # Divergence confirmation
         self.divergence = DivergenceConfig(
-            require_both_indicators=os.getenv('REQUIRE_BOTH_INDICATORS', 'false').lower() == 'true',
-            rsi_period=int(os.getenv('RSI_PERIOD', '14')),
-            macd_fast=int(os.getenv('MACD_FAST', '12')),
-            macd_slow=int(os.getenv('MACD_SLOW', '26')),
-            macd_signal=int(os.getenv('MACD_SIGNAL', '9')),
-            divergence_lookback=int(os.getenv('DIVERGENCE_LOOKBACK', '20'))
+            require_both_indicators=EnvParser.get_bool(EnvVars.REQUIRE_BOTH_INDICATORS, False),
+            rsi_period=EnvParser.get_int(EnvVars.RSI_PERIOD, 14),
+            macd_fast=EnvParser.get_int(EnvVars.MACD_FAST, 12),
+            macd_slow=EnvParser.get_int(EnvVars.MACD_SLOW, 26),
+            macd_signal=EnvParser.get_int(EnvVars.MACD_SIGNAL, 9),
+            divergence_lookback=EnvParser.get_int(EnvVars.DIVERGENCE_LOOKBACK, 20)
         )
-        
-        # Symbol-specific optimization enabled
-        self.use_symbol_specific_settings: bool = os.getenv('USE_SYMBOL_SPECIFIC_SETTINGS', 'true').lower() == 'true'
 
-    def load_symbols_from_active_set(self, file_path: str = "data/active.set", connector=None, logger=None) -> bool:
+        # Symbol-specific optimization enabled
+        self.use_symbol_specific_settings: bool = EnvParser.get_bool(EnvVars.USE_SYMBOL_SPECIFIC_SETTINGS, True)
+
+    def load_symbols_from_active_set(self, file_path: str = f"{FilePaths.DATA_DIR}/active.set", connector=None, logger=None) -> bool:
         """
         Load symbols from active.set file with automatic prioritization and deduplication.
 
