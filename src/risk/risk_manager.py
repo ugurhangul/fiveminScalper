@@ -7,6 +7,13 @@ from src.core.mt5_connector import MT5Connector
 from src.config.config import RiskConfig
 from src.models.data_models import PositionType
 from src.utils.logger import get_logger
+from src.utils.currency_conversion_service import CurrencyConversionService
+from src.constants import (
+    RISK_TOLERANCE_MULTIPLIER,
+    ERROR_INVALID_BALANCE,
+    ERROR_INVALID_SL_DISTANCE,
+    ERROR_PRICE_RETRIEVAL_FAILED,
+)
 
 
 class RiskManager:
@@ -26,6 +33,7 @@ class RiskManager:
         self.risk_config = risk_config
         self.logger = get_logger()
         self.persistence = persistence
+        self.currency_service = CurrencyConversionService(self.logger)
     
     def calculate_lot_size(self, symbol: str, entry_price: float, 
                           stop_loss: float) -> float:
@@ -81,23 +89,12 @@ class RiskManager:
         )
 
         # Convert tick value to account currency if needed
-        original_tick_value = tick_value
-        if currency_profit != account_currency and account_currency and currency_profit != 'UNKNOWN':
-            conversion_rate = self.connector.get_currency_conversion_rate(currency_profit, account_currency)
-            if conversion_rate is not None:
-                tick_value = tick_value * conversion_rate
-                self.logger.info(
-                    f"Currency conversion applied: {currency_profit} -> {account_currency}, "
-                    f"Rate={conversion_rate:.5f}, TickValue: {original_tick_value:.5f} -> {tick_value:.5f}",
-                    symbol
-                )
-            else:
-                self.logger.error(
-                    f"Failed to get conversion rate from {currency_profit} to {account_currency}. "
-                    f"Risk calculation may be incorrect!",
-                    symbol
-                )
-                # Continue with original tick_value but log the issue
+        tick_value, conversion_rate = self.currency_service.convert_tick_value(
+            tick_value=tick_value,
+            currency_profit=currency_profit,
+            account_currency=account_currency,
+            symbol=symbol
+        )
 
         # Calculate stop loss distance in points
         # This matches MQL5: stopLossPoints = MathAbs(entryPrice - stopLoss) / point
@@ -305,17 +302,20 @@ class RiskManager:
 
         # Get account currency and convert tick value if needed
         account_currency = self.connector.get_account_currency()
-        original_tick_value = tick_value
 
-        if currency_profit != account_currency and account_currency and currency_profit != 'UNKNOWN':
-            conversion_rate = self.connector.get_currency_conversion_rate(currency_profit, account_currency)
-            if conversion_rate is not None:
-                tick_value = tick_value * conversion_rate
-                self.logger.debug(
-                    f"Risk validation currency conversion: {currency_profit} -> {account_currency}, "
-                    f"Rate={conversion_rate:.5f}, TickValue: {original_tick_value:.5f} -> {tick_value:.5f}",
-                    symbol
-                )
+        tick_value, conversion_rate = self.currency_service.convert_tick_value(
+            tick_value=tick_value,
+            currency_profit=currency_profit,
+            account_currency=account_currency,
+            symbol=symbol
+        )
+
+        # Log conversion for debugging (if conversion occurred)
+        if conversion_rate is not None:
+            self.logger.debug(
+                f"Risk validation currency conversion applied (rate: {conversion_rate:.5f})",
+                symbol
+            )
 
         # Calculate SL distance in points (matches MQL5 formula)
         sl_distance_in_points = sl_distance / point if point > 0 else sl_distance
@@ -336,7 +336,7 @@ class RiskManager:
         )
 
         # Check if risk exceeds maximum
-        max_risk = self.risk_config.risk_percent_per_trade * 1.5  # Allow 50% tolerance
+        max_risk = self.risk_config.risk_percent_per_trade * RISK_TOLERANCE_MULTIPLIER
         if risk_percent > max_risk:
             # Instead of rejecting, recalculate lot size to target the configured risk percent
             self.logger.warning(

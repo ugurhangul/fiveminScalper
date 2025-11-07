@@ -127,49 +127,87 @@ class StrategyEngine:
 
         # Check for breakout ABOVE 4H high
         if not self.unified_state.breakout_above_detected:
-            # Validate: Open INSIDE 4H range AND Close ABOVE 4H high
-            open_inside_range = candle_5m.open >= candle_4h.low and candle_5m.open <= candle_4h.high
-            close_above_high = candle_5m.close > candle_4h.high
-
-            if open_inside_range and close_above_high:
-                self.unified_state.breakout_above_detected = True
-                self.unified_state.breakout_above_volume = candle_5m.volume
-                self.unified_state.breakout_above_time = candle_5m.time
-
-                self.logger.info("=" * 60, self.symbol)
-                self.logger.info(">>> BREAKOUT ABOVE 4H HIGH DETECTED <<<", self.symbol)
-                self.logger.info(f"5M Open: {candle_5m.open:.5f} (inside 4H range ✓)", self.symbol)
-                self.logger.info(f"5M Close: {candle_5m.close:.5f} (above 4H high ✓)", self.symbol)
-                self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
-                self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
-                self.logger.info(f"4H Candle Time: {candle_4h.time}", self.symbol)
-                self.logger.info(f"Breakout Candle Time: {candle_5m.time}", self.symbol)
-                self.logger.info(f"Breakout Volume: {candle_5m.volume}", self.symbol)
-                self.logger.info(f"Timeout will occur at: {candle_5m.time + timedelta(minutes=self.symbol_params.breakout_timeout_candles * 5)}", self.symbol)
-                self.logger.info("=" * 60, self.symbol)
+            self._detect_breakout_above(candle_4h, candle_5m)
 
         # Check for breakout BELOW 4H low
         if not self.unified_state.breakout_below_detected:
-            # Validate: Open INSIDE 4H range AND Close BELOW 4H low
-            open_inside_range = candle_5m.open >= candle_4h.low and candle_5m.open <= candle_4h.high
-            close_below_low = candle_5m.close < candle_4h.low
+            self._detect_breakout_below(candle_4h, candle_5m)
 
-            if open_inside_range and close_below_low:
-                self.unified_state.breakout_below_detected = True
-                self.unified_state.breakout_below_volume = candle_5m.volume
-                self.unified_state.breakout_below_time = candle_5m.time
+    def _detect_breakout_above(self, candle_4h: FourHourCandle, candle_5m: CandleData):
+        """
+        Detect breakout above 4H high.
 
-                self.logger.info("=" * 60, self.symbol)
-                self.logger.info(">>> BREAKOUT BELOW 4H LOW DETECTED <<<", self.symbol)
-                self.logger.info(f"5M Open: {candle_5m.open:.5f} (inside 4H range ✓)", self.symbol)
-                self.logger.info(f"5M Close: {candle_5m.close:.5f} (below 4H low ✓)", self.symbol)
-                self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
-                self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
-                self.logger.info(f"4H Candle Time: {candle_4h.time}", self.symbol)
-                self.logger.info(f"Breakout Candle Time: {candle_5m.time}", self.symbol)
-                self.logger.info(f"Breakout Volume: {candle_5m.volume}", self.symbol)
-                self.logger.info(f"Timeout will occur at: {candle_5m.time + timedelta(minutes=self.symbol_params.breakout_timeout_candles * 5)}", self.symbol)
-                self.logger.info("=" * 60, self.symbol)
+        Args:
+            candle_4h: 4H candle with high/low range
+            candle_5m: Current 5M candle
+        """
+        # Validate: Open INSIDE 4H range AND Close ABOVE 4H high
+        open_inside_range = candle_5m.open >= candle_4h.low and candle_5m.open <= candle_4h.high
+        close_above_high = candle_5m.close > candle_4h.high
+
+        if open_inside_range and close_above_high:
+            self.unified_state.breakout_above_detected = True
+            self.unified_state.breakout_above_volume = candle_5m.volume
+            self.unified_state.breakout_above_time = candle_5m.time
+
+            self._log_breakout_detection(
+                direction="ABOVE",
+                candle_4h=candle_4h,
+                candle_5m=candle_5m,
+                level=candle_4h.high,
+                level_name="4H high"
+            )
+
+    def _detect_breakout_below(self, candle_4h: FourHourCandle, candle_5m: CandleData):
+        """
+        Detect breakout below 4H low.
+
+        Args:
+            candle_4h: 4H candle with high/low range
+            candle_5m: Current 5M candle
+        """
+        # Validate: Open INSIDE 4H range AND Close BELOW 4H low
+        open_inside_range = candle_5m.open >= candle_4h.low and candle_5m.open <= candle_4h.high
+        close_below_low = candle_5m.close < candle_4h.low
+
+        if open_inside_range and close_below_low:
+            self.unified_state.breakout_below_detected = True
+            self.unified_state.breakout_below_volume = candle_5m.volume
+            self.unified_state.breakout_below_time = candle_5m.time
+
+            self._log_breakout_detection(
+                direction="BELOW",
+                candle_4h=candle_4h,
+                candle_5m=candle_5m,
+                level=candle_4h.low,
+                level_name="4H low"
+            )
+
+    def _log_breakout_detection(self, direction: str, candle_4h: FourHourCandle,
+                                candle_5m: CandleData, level: float, level_name: str):
+        """
+        Log breakout detection with consistent formatting.
+
+        Args:
+            direction: "ABOVE" or "BELOW"
+            candle_4h: 4H candle
+            candle_5m: 5M candle that broke out
+            level: Price level that was broken
+            level_name: Human-readable name of the level
+        """
+        timeout_time = candle_5m.time + timedelta(minutes=self.symbol_params.breakout_timeout_candles * 5)
+
+        self.logger.info("=" * 60, self.symbol)
+        self.logger.info(f">>> BREAKOUT {direction} {level_name.upper()} DETECTED <<<", self.symbol)
+        self.logger.info(f"5M Open: {candle_5m.open:.5f} (inside 4H range ✓)", self.symbol)
+        self.logger.info(f"5M Close: {candle_5m.close:.5f} ({direction.lower()} {level_name} ✓)", self.symbol)
+        self.logger.info(f"4H High: {candle_4h.high:.5f}", self.symbol)
+        self.logger.info(f"4H Low: {candle_4h.low:.5f}", self.symbol)
+        self.logger.info(f"4H Candle Time: {candle_4h.time}", self.symbol)
+        self.logger.info(f"Breakout Candle Time: {candle_5m.time}", self.symbol)
+        self.logger.info(f"Breakout Volume: {candle_5m.volume}", self.symbol)
+        self.logger.info(f"Timeout will occur at: {timeout_time}", self.symbol)
+        self.logger.info("=" * 60, self.symbol)
 
 
     def _check_breakout_timeout(self, candle_5m: CandleData):
@@ -187,59 +225,85 @@ class StrategyEngine:
 
         # Check breakout ABOVE timeout
         if self.unified_state.breakout_above_detected and self.unified_state.breakout_above_time:
-            age = candle_5m.time - self.unified_state.breakout_above_time
-            age_minutes = int(age.total_seconds() / 60)
-
-            # ALWAYS log timeout check for active breakouts (not just debug)
-            self.logger.info(f"[TIMEOUT CHECK ABOVE] Age={age_minutes}min, Limit={timeout_minutes}min, "
-                            f"Breakout={self.unified_state.breakout_above_time}, Current={candle_5m.time}", self.symbol)
-
-            # Validate age is positive (handle timezone issues)
-            if age.total_seconds() < 0:
-                self.logger.warning(f"Negative breakout age detected: {age.total_seconds()}s - possible timezone issue", self.symbol)
-                self.logger.warning(f"Current time: {candle_5m.time}, Breakout time: {self.unified_state.breakout_above_time}", self.symbol)
-                return
-
-            if age > timeout_delta:
-                self.logger.info("=" * 60, self.symbol)
-                self.logger.info(">>> BREAKOUT ABOVE TIMEOUT - Resetting <<<", self.symbol)
-                self.logger.info(f"Breakout Age: {age_minutes} minutes ({age_minutes // 60}h {age_minutes % 60}m)", self.symbol)
-                self.logger.info(f"Timeout Limit: {timeout_minutes} minutes ({self.symbol_params.breakout_timeout_candles} candles)", self.symbol)
-                self.logger.info(f"Breakout Time: {self.unified_state.breakout_above_time}", self.symbol)
-                self.logger.info(f"Current Time: {candle_5m.time}", self.symbol)
-                self.logger.info("Reason: Breakout too old, momentum lost", self.symbol)
-                self.logger.info("=" * 60, self.symbol)
-                self.unified_state.reset_breakout_above()
-            else:
-                self.logger.info(f"[TIMEOUT CHECK ABOVE] Breakout still valid ({age_minutes}/{timeout_minutes} min)", self.symbol)
+            self._check_single_breakout_timeout(
+                direction="ABOVE",
+                breakout_time=self.unified_state.breakout_above_time,
+                current_time=candle_5m.time,
+                timeout_delta=timeout_delta,
+                timeout_minutes=timeout_minutes,
+                reset_callback=self.unified_state.reset_breakout_above
+            )
 
         # Check breakout BELOW timeout
         if self.unified_state.breakout_below_detected and self.unified_state.breakout_below_time:
-            age = candle_5m.time - self.unified_state.breakout_below_time
-            age_minutes = int(age.total_seconds() / 60)
+            self._check_single_breakout_timeout(
+                direction="BELOW",
+                breakout_time=self.unified_state.breakout_below_time,
+                current_time=candle_5m.time,
+                timeout_delta=timeout_delta,
+                timeout_minutes=timeout_minutes,
+                reset_callback=self.unified_state.reset_breakout_below
+            )
 
-            # ALWAYS log timeout check for active breakouts (not just debug)
-            self.logger.info(f"[TIMEOUT CHECK BELOW] Age={age_minutes}min, Limit={timeout_minutes}min, "
-                            f"Breakout={self.unified_state.breakout_below_time}, Current={candle_5m.time}", self.symbol)
+    def _check_single_breakout_timeout(self, direction: str, breakout_time: datetime,
+                                       current_time: datetime, timeout_delta: timedelta,
+                                       timeout_minutes: int, reset_callback):
+        """
+        Check timeout for a single breakout direction.
 
-            # Validate age is positive (handle timezone issues)
-            if age.total_seconds() < 0:
-                self.logger.warning(f"Negative breakout age detected: {age.total_seconds()}s - possible timezone issue", self.symbol)
-                self.logger.warning(f"Current time: {candle_5m.time}, Breakout time: {self.unified_state.breakout_below_time}", self.symbol)
-                return
+        Args:
+            direction: "ABOVE" or "BELOW"
+            breakout_time: When the breakout occurred
+            current_time: Current candle time
+            timeout_delta: Timeout duration as timedelta
+            timeout_minutes: Timeout duration in minutes
+            reset_callback: Function to call to reset the breakout
+        """
+        age = current_time - breakout_time
+        age_minutes = int(age.total_seconds() / 60)
 
-            if age > timeout_delta:
-                self.logger.info("=" * 60, self.symbol)
-                self.logger.info(">>> BREAKOUT BELOW TIMEOUT - Resetting <<<", self.symbol)
-                self.logger.info(f"Breakout Age: {age_minutes} minutes ({age_minutes // 60}h {age_minutes % 60}m)", self.symbol)
-                self.logger.info(f"Timeout Limit: {timeout_minutes} minutes ({self.symbol_params.breakout_timeout_candles} candles)", self.symbol)
-                self.logger.info(f"Breakout Time: {self.unified_state.breakout_below_time}", self.symbol)
-                self.logger.info(f"Current Time: {candle_5m.time}", self.symbol)
-                self.logger.info("Reason: Breakout too old, momentum lost", self.symbol)
-                self.logger.info("=" * 60, self.symbol)
-                self.unified_state.reset_breakout_below()
-            else:
-                self.logger.info(f"[TIMEOUT CHECK BELOW] Breakout still valid ({age_minutes}/{timeout_minutes} min)", self.symbol)
+        # ALWAYS log timeout check for active breakouts (not just debug)
+        self.logger.info(
+            f"[TIMEOUT CHECK {direction}] Age={age_minutes}min, Limit={timeout_minutes}min, "
+            f"Breakout={breakout_time}, Current={current_time}",
+            self.symbol
+        )
+
+        # Validate age is positive (handle timezone issues)
+        if age.total_seconds() < 0:
+            self.logger.warning(
+                f"Negative breakout age detected: {age.total_seconds()}s - possible timezone issue",
+                self.symbol
+            )
+            self.logger.warning(
+                f"Current time: {current_time}, Breakout time: {breakout_time}",
+                self.symbol
+            )
+            return
+
+        if age > timeout_delta:
+            # Breakout timed out - reset it
+            self.logger.info("=" * 60, self.symbol)
+            self.logger.info(f">>> BREAKOUT {direction} TIMEOUT - Resetting <<<", self.symbol)
+            self.logger.info(
+                f"Breakout Age: {age_minutes} minutes ({age_minutes // 60}h {age_minutes % 60}m)",
+                self.symbol
+            )
+            self.logger.info(
+                f"Timeout Limit: {timeout_minutes} minutes ({self.symbol_params.breakout_timeout_candles} candles)",
+                self.symbol
+            )
+            self.logger.info(f"Breakout Time: {breakout_time}", self.symbol)
+            self.logger.info(f"Current Time: {current_time}", self.symbol)
+            self.logger.info("Reason: Breakout too old, momentum lost", self.symbol)
+            self.logger.info("=" * 60, self.symbol)
+            reset_callback()
+        else:
+            # Breakout still valid
+            self.logger.info(
+                f"[TIMEOUT CHECK {direction}] Breakout still valid ({age_minutes}/{timeout_minutes} min)",
+                self.symbol
+            )
 
     def _classify_strategies(self, candle_5m: CandleData):
         """

@@ -8,6 +8,7 @@ from src.execution.order_manager import OrderManager
 from src.core.mt5_connector import MT5Connector
 from src.config.config import TrailingStopConfig
 from src.utils.logger import get_logger
+from src.utils.comment_parser import CommentParser
 
 
 class TradeManager:
@@ -57,26 +58,21 @@ class TradeManager:
         Returns:
             ATR timeframe string (e.g., "M5", "M1")
         """
-        # Extract range_id from position comment
-        # Comment format: "TB|BUY|V|4H5M" or "FB|SELL|VD|15M1M"
-        if pos.comment and '|' in pos.comment:
-            parts = pos.comment.split('|')
-            if len(parts) >= 4:
-                # Last part is the range identifier (e.g., "4H5M" or "15M1M")
-                range_identifier = parts[3]
+        # Extract range_id from position comment using CommentParser
+        range_identifier = CommentParser.extract_range_id(pos.comment)
 
-                # Convert back to range_id format (e.g., "4H5M" -> "4H_5M")
-                # Try to match with known range configurations
-                for range_config in self.range_configs:
-                    # Remove underscores from range_id for comparison
-                    if range_config.range_id.replace("_", "") == range_identifier:
-                        # Use range-specific ATR timeframe if set, otherwise use breakout timeframe
-                        atr_tf = range_config.atr_timeframe or range_config.breakout_timeframe
-                        self.logger.debug(
-                            f"Position {pos.ticket} matched to range {range_config.range_id}, using ATR timeframe: {atr_tf}",
-                            pos.symbol
-                        )
-                        return atr_tf
+        if range_identifier:
+            # Try to match with known range configurations
+            for range_config in self.range_configs:
+                # Remove underscores from range_id for comparison
+                if CommentParser.normalize_range_id(range_config.range_id) == range_identifier:
+                    # Use range-specific ATR timeframe if set, otherwise use breakout timeframe
+                    atr_tf = range_config.atr_timeframe or range_config.breakout_timeframe
+                    self.logger.debug(
+                        f"Position {pos.ticket} matched to range {range_config.range_id}, using ATR timeframe: {atr_tf}",
+                        pos.symbol
+                    )
+                    return atr_tf
 
         # Fallback to global config if no range match found
         fallback_tf = self.trailing_config.atr_timeframe

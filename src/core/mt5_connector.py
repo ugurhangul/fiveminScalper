@@ -10,6 +10,16 @@ from typing import List, Optional, Dict, Tuple
 from src.models.data_models import CandleData, PositionInfo, PositionType
 from src.config.config import MT5Config
 from src.utils.logger import get_logger
+from src.utils.timeframe_converter import TimeframeConverter
+from src.utils.currency_conversion_service import CurrencyConversionService
+from src.core.symbol_info_cache import SymbolInfoCache
+from src.constants import (
+    ERROR_MT5_NOT_CONNECTED,
+    ERROR_INVALID_TIMEFRAME,
+    ERROR_SYMBOL_NOT_FOUND,
+    HISTORY_LOOKBACK_DAYS,
+    CURRENCY_SEPARATORS,
+)
 
 
 class MT5Connector:
@@ -18,14 +28,15 @@ class MT5Connector:
     def __init__(self, config: MT5Config):
         """
         Initialize MT5 connector.
-        
+
         Args:
             config: MT5 configuration
         """
         self.config = config
         self.logger = get_logger()
         self.is_connected = False
-        self._symbol_info_cache: Dict[str, dict] = {}
+        self.currency_service = CurrencyConversionService(self.logger)
+        self.symbol_cache = SymbolInfoCache(self.logger)
     
     def connect(self) -> bool:
         """
@@ -93,23 +104,13 @@ class MT5Connector:
             DataFrame with OHLCV data or None if error
         """
         if not self.is_connected:
-            self.logger.error("Not connected to MT5")
+            self.logger.error(ERROR_MT5_NOT_CONNECTED)
             return None
-        
-        # Map timeframe string to MT5 constant
-        timeframe_map = {
-            'M1': mt5.TIMEFRAME_M1,
-            'M5': mt5.TIMEFRAME_M5,
-            'M15': mt5.TIMEFRAME_M15,
-            'M30': mt5.TIMEFRAME_M30,
-            'H1': mt5.TIMEFRAME_H1,
-            'H4': mt5.TIMEFRAME_H4,
-            'D1': mt5.TIMEFRAME_D1,
-        }
-        
-        tf = timeframe_map.get(timeframe)
+
+        # Convert timeframe string to MT5 constant
+        tf = TimeframeConverter.to_mt5_constant(timeframe)
         if tf is None:
-            self.logger.error(f"Invalid timeframe: {timeframe}")
+            self.logger.error(f"{ERROR_INVALID_TIMEFRAME}: {timeframe}")
             return None
         
         try:
@@ -178,62 +179,27 @@ class MT5Connector:
     def get_symbol_info(self, symbol: str) -> Optional[dict]:
         """
         Get symbol information (cached).
-        
+
+        Delegates to SymbolInfoCache.
+
         Args:
             symbol: Symbol name
-            
+
         Returns:
             Dictionary with symbol info or None
         """
-        # Check cache first
-        if symbol in self._symbol_info_cache:
-            return self._symbol_info_cache[symbol]
-        
-        try:
-            info = mt5.symbol_info(symbol)
-            if info is None:
-                self.logger.error(f"Failed to get symbol info for {symbol}")
-                return None
-            
-            symbol_dict = {
-                'point': info.point,
-                'digits': info.digits,
-                'tick_value': info.trade_tick_value,
-                'tick_size': info.trade_tick_size,
-                'min_lot': info.volume_min,
-                'max_lot': info.volume_max,
-                'lot_step': info.volume_step,
-                'contract_size': info.trade_contract_size,
-                'filling_mode': info.filling_mode,
-                'stops_level': info.trade_stops_level,
-                'freeze_level': info.trade_freeze_level,
-                'trade_mode': info.trade_mode,
-                'currency_base': info.currency_base,
-                'currency_profit': info.currency_profit,
-                'currency_margin': info.currency_margin,
-                'category': info.category,  # MT5 native category (e.g., 'Majors', 'Crypto', etc.)
-            }
-            
-            # Cache it
-            self._symbol_info_cache[symbol] = symbol_dict
-            
-            return symbol_dict
-            
-        except Exception as e:
-            self.logger.error(f"Error getting symbol info for {symbol}: {e}")
-            return None
+        return self.symbol_cache.get(symbol)
 
     def clear_symbol_info_cache(self, symbol: Optional[str] = None):
         """
         Clear symbol info cache.
 
+        Delegates to SymbolInfoCache.
+
         Args:
             symbol: Symbol to clear from cache, or None to clear all
         """
-        if symbol:
-            self._symbol_info_cache.pop(symbol, None)
-        else:
-            self._symbol_info_cache.clear()
+        self.symbol_cache.invalidate(symbol)
 
     def get_account_balance(self) -> float:
         """Get current account balance"""
@@ -263,6 +229,8 @@ class MT5Connector:
         """
         Get conversion rate from one currency to another.
 
+        Delegates to CurrencyConversionService.
+
         Args:
             from_currency: Source currency (e.g., 'THB')
             to_currency: Target currency (e.g., 'USD')
@@ -270,41 +238,7 @@ class MT5Connector:
         Returns:
             Conversion rate or None if not available
         """
-        if from_currency == to_currency:
-            return 1.0
-
-        # Try direct pair: FROMTO (e.g., THBUSD)
-        direct_pair = f"{from_currency}{to_currency}"
-        tick = mt5.symbol_info_tick(direct_pair)
-        if tick is not None:
-            # Use bid price for conversion
-            return tick.bid
-
-        # Try inverse pair: TOFROM (e.g., USDTHB)
-        inverse_pair = f"{to_currency}{from_currency}"
-        tick = mt5.symbol_info_tick(inverse_pair)
-        if tick is not None:
-            # Use inverse of ask price for conversion
-            return 1.0 / tick.ask if tick.ask > 0 else None
-
-        # Try with common separators
-        for separator in ['/', '.', '_', '']:
-            if separator:
-                direct_pair_sep = f"{from_currency}{separator}{to_currency}"
-                tick = mt5.symbol_info_tick(direct_pair_sep)
-                if tick is not None:
-                    return tick.bid
-
-                inverse_pair_sep = f"{to_currency}{separator}{from_currency}"
-                tick = mt5.symbol_info_tick(inverse_pair_sep)
-                if tick is not None:
-                    return 1.0 / tick.ask if tick.ask > 0 else None
-
-        self.logger.warning(
-            f"Could not find conversion rate for {from_currency} to {to_currency}. "
-            f"Tried: {direct_pair}, {inverse_pair}"
-        )
-        return None
+        return self.currency_service.get_conversion_rate(from_currency, to_currency)
 
     def get_positions(self, symbol: Optional[str] = None, magic_number: Optional[int] = None) -> List[PositionInfo]:
         """
@@ -372,8 +306,8 @@ class MT5Connector:
             return None
 
         try:
-            # Request history for the last 7 days
-            from_date = datetime.now() - timedelta(days=7)
+            # Request history for the configured lookback period
+            from_date = datetime.now() - timedelta(days=HISTORY_LOOKBACK_DAYS)
             to_date = datetime.now()
 
             # Get history deals
@@ -546,7 +480,7 @@ class MT5Connector:
             List of symbol names currently in Market Watch
         """
         if not self.is_connected:
-            self.logger.error("Not connected to MT5")
+            self.logger.error(ERROR_MT5_NOT_CONNECTED)
             return []
 
         try:

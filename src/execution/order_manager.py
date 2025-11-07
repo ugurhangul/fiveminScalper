@@ -7,8 +7,25 @@ from typing import Optional, Tuple
 from src.models.data_models import PositionType, TradeSignal
 from src.core.mt5_connector import MT5Connector
 from src.execution.position_persistence import PositionPersistence
+from src.execution.filling_mode_resolver import FillingModeResolver
 from src.utils.logger import get_logger
 from src.utils.autotrading_cooldown import AutoTradingCooldown
+from src.utils.price_normalization_service import PriceNormalizationService
+from src.constants import (
+    DEFAULT_PRICE_DEVIATION,
+    DEFAULT_RISK_REWARD_RATIO,
+    ORDER_TIME_TYPE,
+    FILLING_MODE_FOK,
+    FILLING_MODE_IOC,
+    FILLING_MODE_RETURN,
+    FILLING_MODE_PREFERENCE,
+    ERROR_ORDER_SEND_FAILED,
+    ERROR_AUTOTRADING_DISABLED,
+    SUCCESS_POSITION_OPENED,
+    SUCCESS_POSITION_MODIFIED,
+    STRATEGY_TYPE_FALSE_BREAKOUT,
+    STRATEGY_TYPE_TRUE_BREAKOUT,
+)
 
 
 class OrderManager:
@@ -31,58 +48,49 @@ class OrderManager:
         self.magic_number = magic_number
         self.trade_comment = trade_comment
         self.logger = get_logger()
-        self.deviation = 10  # Price deviation in points
+        self.deviation = DEFAULT_PRICE_DEVIATION
 
         # Position persistence
         self.persistence = persistence if persistence is not None else PositionPersistence()
 
         # AutoTrading cooldown manager
         self.cooldown = cooldown_manager if cooldown_manager is not None else AutoTradingCooldown()
+
+        # Price normalization service
+        self.price_normalizer = PriceNormalizationService(connector)
+
+        # Filling mode resolver
+        self.filling_mode_resolver = FillingModeResolver(self.logger)
     
     def normalize_price(self, symbol: str, price: float) -> float:
         """
         Normalize price to symbol's digits.
-        
+
+        Delegates to PriceNormalizationService.
+
         Args:
             symbol: Symbol name
             price: Price to normalize
-            
+
         Returns:
             Normalized price
         """
-        info = self.connector.get_symbol_info(symbol)
-        if info is None:
-            return price
-        
-        digits = info['digits']
-        return round(price, digits)
-    
+        return self.price_normalizer.normalize_price(symbol, price)
+
     def normalize_volume(self, symbol: str, volume: float) -> float:
         """
         Normalize volume to symbol's lot step.
-        
+
+        Delegates to PriceNormalizationService.
+
         Args:
             symbol: Symbol name
             volume: Volume to normalize
-            
+
         Returns:
             Normalized volume
         """
-        info = self.connector.get_symbol_info(symbol)
-        if info is None:
-            return volume
-        
-        min_lot = info['min_lot']
-        max_lot = info['max_lot']
-        lot_step = info['lot_step']
-        
-        # Round to lot step
-        volume = round(volume / lot_step) * lot_step
-        
-        # Clamp to min/max
-        volume = max(min_lot, min(max_lot, volume))
-        
-        return volume
+        return self.price_normalizer.normalize_volume(symbol, volume)
     
     def execute_signal(self, signal: TradeSignal) -> Optional[int]:
         """
@@ -153,13 +161,11 @@ class OrderManager:
 
         # Recalculate TP based on actual execution price (market price)
         # This ensures the R:R ratio is maintained with the actual entry
-        # Use the configured R:R ratio (default 2.0)
-        configured_rr = 2.0  # Always use 2:1 ratio
-
+        # Use the configured R:R ratio from constants
         risk = abs(price - sl)
-        reward = risk * configured_rr
+        reward = risk * DEFAULT_RISK_REWARD_RATIO
 
-        self.logger.debug(f"TP Calculation: Entry={price:.5f}, SL={sl:.5f}, Risk={risk:.5f}, Reward={reward:.5f}, R:R={configured_rr}", symbol)
+        self.logger.debug(f"TP Calculation: Entry={price:.5f}, SL={sl:.5f}, Risk={risk:.5f}, Reward={reward:.5f}, R:R={DEFAULT_RISK_REWARD_RATIO}", symbol)
 
         if signal.signal_type == PositionType.BUY:
             tp = price + reward
@@ -196,14 +202,8 @@ class OrderManager:
         )
 
         # Determine filling mode based on symbol's supported modes
-        filling_mode = self._get_filling_mode(symbol_info)
-
-        # Log the filling mode being used
-        filling_mode_name = {
-            mt5.ORDER_FILLING_FOK: "FOK",
-            mt5.ORDER_FILLING_IOC: "IOC",
-            mt5.ORDER_FILLING_RETURN: "RETURN"
-        }.get(filling_mode, "UNKNOWN")
+        filling_mode = self.filling_mode_resolver.resolve_filling_mode(symbol_info, symbol)
+        filling_mode_name = self.filling_mode_resolver.get_filling_mode_name(filling_mode)
         self.logger.debug(f"Using filling mode: {filling_mode_name}", symbol)
 
         # Generate informative trade comment
@@ -465,9 +465,9 @@ class OrderManager:
         """
         # Determine strategy type
         if signal.is_true_breakout:
-            strategy = "TB"  # True Breakout
+            strategy = STRATEGY_TYPE_TRUE_BREAKOUT
         else:
-            strategy = "FB"  # False Breakout
+            strategy = STRATEGY_TYPE_FALSE_BREAKOUT
 
         # Determine confirmations
         confirmations = []
@@ -501,37 +501,15 @@ class OrderManager:
         """
         Determine the appropriate filling mode for the symbol.
 
+        Delegates to FillingModeResolver.
+
         Args:
             symbol_info: Symbol information dictionary
 
         Returns:
             MT5 filling mode constant
         """
-        # Get symbol's filling mode flags
-        filling_mode = symbol_info.get('filling_mode', 0)
-
-        # If filling_mode is 0, it means it wasn't retrieved - default to FOK
-        if filling_mode == 0:
-            self.logger.warning(f"Filling mode not available, defaulting to FOK")
-            return mt5.ORDER_FILLING_FOK
-
-        # Check supported modes in order of preference: FOK > IOC > RETURN
-        # FOK (Fill or Kill) - most restrictive, best for market orders
-        if filling_mode & 1:  # SYMBOL_FILLING_FOK (bit 0)
-            return mt5.ORDER_FILLING_FOK
-
-        # IOC (Immediate or Cancel) - partial fills allowed
-        elif filling_mode & 2:  # SYMBOL_FILLING_IOC (bit 1)
-            return mt5.ORDER_FILLING_IOC
-
-        # RETURN - can remain in order book
-        elif filling_mode & 4:  # SYMBOL_FILLING_RETURN (bit 2)
-            return mt5.ORDER_FILLING_RETURN
-
-        # Fallback to FOK if no mode is supported (shouldn't happen)
-        else:
-            self.logger.warning(f"No filling mode supported (flags: {filling_mode}), defaulting to FOK")
-            return mt5.ORDER_FILLING_FOK
+        return self.filling_mode_resolver.resolve_filling_mode(symbol_info)
     
     def modify_position(self, ticket: int, sl: Optional[float] = None,
                        tp: Optional[float] = None):

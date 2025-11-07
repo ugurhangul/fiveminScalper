@@ -21,6 +21,8 @@ from src.risk.risk_manager import RiskManager
 from src.config.config import config
 from src.config.symbol_optimizer import SymbolOptimizer
 from src.utils.logger import get_logger
+from src.utils.comment_parser import CommentParser
+from src.constants import STRATEGY_TYPE_FALSE_BREAKOUT, STRATEGY_TYPE_TRUE_BREAKOUT
 
 
 class SymbolStrategy:
@@ -283,7 +285,7 @@ class SymbolStrategy:
             self.logger.info(f"Divergence Confirmed: {signal.divergence_confirmed}", self.symbol)
 
         # Determine strategy type and range for duplicate checking
-        strategy_type = "TB" if signal.is_true_breakout else "FB"
+        strategy_type = STRATEGY_TYPE_TRUE_BREAKOUT if signal.is_true_breakout else STRATEGY_TYPE_FALSE_BREAKOUT
         range_id = signal.range_id if signal.range_id != "default" else None
 
         # Check if we can open new position

@@ -6,13 +6,16 @@ from typing import Optional, List
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 from src.models.data_models import (
-    MultiRangeBreakoutState, UnifiedBreakoutState, ReferenceCandle, CandleData, 
+    MultiRangeBreakoutState, UnifiedBreakoutState, ReferenceCandle, CandleData,
     TradeSignal, PositionType, SymbolParameters, RangeConfig
 )
 from src.strategy.multi_range_candle_processor import MultiRangeCandleProcessor
 from src.indicators.technical_indicators import TechnicalIndicators
+from src.strategy.signal_generator import SignalGenerator
 from src.config.config import StrategyConfig
 from src.utils.logger import get_logger
+from src.utils.timeframe_converter import TimeframeConverter
+from src.constants import RETEST_RANGE_PERCENT
 
 
 class MultiRangeStrategyEngine:
@@ -46,6 +49,14 @@ class MultiRangeStrategyEngine:
         self.symbol_params = symbol_params
         self.connector = connector
         self.logger = get_logger()
+
+        # Signal generator for consistent signal creation
+        self.signal_generator = SignalGenerator(
+            symbol=symbol,
+            symbol_params=symbol_params,
+            logger=self.logger,
+            connector=connector
+        )
 
         # Multi-range breakout state tracking
         self.multi_range_state = MultiRangeBreakoutState()
@@ -234,7 +245,14 @@ class MultiRangeStrategyEngine:
                 self.logger.info(f"Reference Time: {candle_ref.time}", self.symbol)
                 self.logger.info(f"Breakout Time: {candle_breakout.time}", self.symbol)
                 self.logger.info(f"Breakout Volume: {candle_breakout.volume}", self.symbol)
-                self.logger.info(f"Timeout at: {candle_breakout.time + timedelta(minutes=self.symbol_params.breakout_timeout_candles * 5)}", self.symbol)
+                # Calculate timeout using TimeframeConverter
+                config = self.candle_processor.range_configs.get(range_id)
+                if config:
+                    minutes_per_candle = TimeframeConverter.get_minutes_per_candle(config.breakout_timeframe)
+                    timeout_minutes = self.symbol_params.breakout_timeout_candles * minutes_per_candle
+                    self.logger.info(f"Timeout at: {candle_breakout.time + timedelta(minutes=timeout_minutes)}", self.symbol)
+                else:
+                    self.logger.info(f"Timeout at: {candle_breakout.time + timedelta(minutes=self.symbol_params.breakout_timeout_candles * 5)}", self.symbol)
                 self.logger.info("=" * 60, self.symbol)
     
     def _check_breakout_timeout(self, range_id: str, state: UnifiedBreakoutState, candle_breakout: CandleData):
@@ -250,17 +268,9 @@ class MultiRangeStrategyEngine:
         config = self.candle_processor.range_configs.get(range_id)
         if not config:
             return
-        
-        # Calculate timeout based on breakout timeframe
-        # For M5: 24 candles = 120 minutes
-        # For M1: 24 candles = 24 minutes (but we might want to adjust this)
-        if config.breakout_timeframe.startswith('M'):
-            minutes_per_candle = int(config.breakout_timeframe[1:])
-        elif config.breakout_timeframe.startswith('H'):
-            minutes_per_candle = int(config.breakout_timeframe[1:]) * 60
-        else:
-            minutes_per_candle = 5  # Default to 5 minutes
-        
+
+        # Calculate timeout using TimeframeConverter
+        minutes_per_candle = TimeframeConverter.get_minutes_per_candle(config.breakout_timeframe)
         timeout_minutes = self.symbol_params.breakout_timeout_candles * minutes_per_candle
         timeout_delta = timedelta(minutes=timeout_minutes)
         
@@ -498,7 +508,7 @@ class MultiRangeStrategyEngine:
         if state.true_buy_qualified:
             # First check for retest (pullback to reference high)
             if not state.true_buy_retest_detected:
-                retest_range = candle_ref.high * 0.0005  # 0.05% range
+                retest_range = candle_ref.high * RETEST_RANGE_PERCENT
                 if abs(candle_breakout.close - candle_ref.high) <= retest_range:
                     state.true_buy_retest_detected = True
                     state.true_buy_retest_ok = True
@@ -530,7 +540,7 @@ class MultiRangeStrategyEngine:
         if state.true_sell_qualified:
             # First check for retest (pullback to reference low)
             if not state.true_sell_retest_detected:
-                retest_range = candle_ref.low * 0.0005  # 0.05% range
+                retest_range = candle_ref.low * RETEST_RANGE_PERCENT
                 if abs(candle_breakout.close - candle_ref.low) <= retest_range:
                     state.true_sell_retest_detected = True
                     state.true_sell_retest_ok = True
@@ -638,17 +648,9 @@ class MultiRangeStrategyEngine:
         """
         # Get last 10 confirmation candles for this range
         df = self.candle_processor.get_breakout_candles(range_id, count=10)
-        if df is None or len(df) == 0:
-            return None
 
-        # Find the LOWEST low among ALL candles (no filter needed)
-        lowest_low = df['low'].min()
-
-        if lowest_low is not None and not pd.isna(lowest_low):
-            self.logger.info(f"Found lowest low in pattern [{range_id}]: {lowest_low:.5f} (ref low: {reference_low:.5f})", self.symbol)
-            return float(lowest_low)
-
-        return None
+        # Delegate to SignalGenerator for pattern detection
+        return self.signal_generator.find_lowest_low_in_pattern(df, reference_low)
 
     def _find_highest_high_in_pattern(self, range_id: str, reference_high: float) -> Optional[float]:
         """
@@ -666,17 +668,9 @@ class MultiRangeStrategyEngine:
         """
         # Get last 10 confirmation candles for this range
         df = self.candle_processor.get_breakout_candles(range_id, count=10)
-        if df is None or len(df) == 0:
-            return None
 
-        # Find the HIGHEST high among ALL candles (no filter needed)
-        highest_high = df['high'].max()
-
-        if highest_high is not None and not pd.isna(highest_high):
-            self.logger.info(f"Found highest high in pattern [{range_id}]: {highest_high:.5f} (ref high: {reference_high:.5f})", self.symbol)
-            return float(highest_high)
-
-        return None
+        # Delegate to SignalGenerator for pattern detection
+        return self.signal_generator.find_highest_high_in_pattern(df, reference_high)
 
     def _calculate_sl_offset(self, reference_price: float) -> float:
         """

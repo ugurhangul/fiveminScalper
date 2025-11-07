@@ -7,69 +7,54 @@ import numpy as np
 from typing import Optional, Tuple
 import talib
 from src.utils.logger import get_logger
+from src.indicators.volume_analysis_service import VolumeAnalysisService, VolumeCheckType
 
 
 class TechnicalIndicators:
     """Technical indicator calculations"""
-    
+
     def __init__(self):
         self.logger = get_logger()
+        self.volume_service = VolumeAnalysisService(self.logger)
     
     def calculate_average_volume(self, volumes: pd.Series, period: int) -> float:
         """
         Calculate average volume over a period.
-        
+
+        Delegates to VolumeAnalysisService.
+
         Args:
             volumes: Series of volume data
             period: Period for average
-            
+
         Returns:
             Average volume
         """
-        if len(volumes) < period:
-            self.logger.warning(f"Not enough data for volume average: {len(volumes)} < {period}")
-            return 0.0
-        
-        avg_volume = volumes.tail(period).mean()
-          
-        return avg_volume
+        return self.volume_service.calculate_average_volume(volumes, period)
     
     def is_breakout_volume_low(self, breakout_volume: int, average_volume: float,
                                max_threshold: float, symbol: str) -> bool:
         """
         Check if breakout volume is LOW (weak breakout = good for false breakout).
-        
+
+        Delegates to VolumeAnalysisService.
+
         Args:
             breakout_volume: Volume of breakout candle
             average_volume: Average volume
             max_threshold: Maximum threshold multiplier
             symbol: Symbol name for logging
-            
+
         Returns:
             True if volume is low, False otherwise
         """
-        if average_volume <= 0:
-            self.logger.warning("Average volume is zero or negative", symbol)
-            return False
-        
-        volume_ratio = breakout_volume / average_volume
-        is_low = volume_ratio <= max_threshold
-        
-        self.logger.info("=== Breakout Volume Check (Want LOW Volume) ===", symbol)
-        self.logger.info(f"Breakout Volume: {breakout_volume}", symbol)
-        self.logger.info(f"Average Volume: {average_volume:.0f}", symbol)
-        self.logger.info(f"Volume Ratio: {volume_ratio:.2f}x", symbol)
-        self.logger.info(f"Max Threshold: {max_threshold:.2f}x", symbol)
-        self.logger.info(f"Volume is LOW: {'YES' if is_low else 'NO'}", symbol)
-        
-        if not is_low:
-            self.logger.info(">>> VOLUME TOO HIGH - Strong breakout, likely to continue <<<", symbol)
-            self.logger.info(">>> Not ideal for false breakout strategy - skipping <<<", symbol)
-        else:
-            self.logger.info(">>> VOLUME IS LOW - Weak breakout, likely to reverse <<<", symbol)
-            self.logger.info(">>> Good candidate for false breakout - proceeding <<<", symbol)
-        
-        return is_low
+        return self.volume_service.is_volume_low(
+            current_volume=breakout_volume,
+            average_volume=average_volume,
+            max_threshold=max_threshold,
+            symbol=symbol,
+            check_type=VolumeCheckType.BREAKOUT_LOW
+        )
     
     def calculate_atr(self, high: pd.Series, low: pd.Series, close: pd.Series,
                      period: int = 14) -> Optional[float]:
@@ -111,6 +96,8 @@ class TechnicalIndicators:
         """
         Check if reversal volume is HIGH (strong reversal = good confirmation).
 
+        Delegates to VolumeAnalysisService.
+
         Args:
             reversal_volume: Volume of reversal candle
             average_volume: Average volume
@@ -120,33 +107,20 @@ class TechnicalIndicators:
         Returns:
             True if volume is high, False otherwise
         """
-        if average_volume <= 0:
-            self.logger.warning("Average volume is zero or negative", symbol)
-            return False
-
-        volume_ratio = reversal_volume / average_volume
-        is_high = volume_ratio >= min_threshold
-
-        self.logger.info("=== Reversal Volume Check (Want HIGH Volume) ===", symbol)
-        self.logger.info(f"Reversal Volume: {reversal_volume}", symbol)
-        self.logger.info(f"Average Volume: {average_volume:.0f}", symbol)
-        self.logger.info(f"Volume Ratio: {volume_ratio:.2f}x", symbol)
-        self.logger.info(f"Min Threshold: {min_threshold:.2f}x", symbol)
-        self.logger.info(f"Volume is HIGH: {'YES' if is_high else 'NO'}", symbol)
-
-        if not is_high:
-            self.logger.info(">>> VOLUME TOO LOW - Weak reversal, lacks conviction <<<", symbol)
-            self.logger.info(">>> May not be a strong false breakout - skipping <<<", symbol)
-        else:
-            self.logger.info(">>> VOLUME IS HIGH - Strong reversal confirmation <<<", symbol)
-            self.logger.info(">>> Excellent false breakout signal - proceeding <<<", symbol)
-
-        return is_high
+        return self.volume_service.is_volume_high(
+            current_volume=reversal_volume,
+            average_volume=average_volume,
+            min_threshold=min_threshold,
+            symbol=symbol,
+            check_type=VolumeCheckType.REVERSAL_HIGH
+        )
 
     def is_true_breakout_volume_high(self, breakout_volume: int, average_volume: float,
                                      min_threshold: float, symbol: str) -> bool:
         """
         Check if breakout volume is HIGH (strong breakout = good for true breakout).
+
+        Delegates to VolumeAnalysisService.
 
         Args:
             breakout_volume: Volume of breakout candle
@@ -157,33 +131,20 @@ class TechnicalIndicators:
         Returns:
             True if volume is high, False otherwise
         """
-        if average_volume <= 0:
-            self.logger.warning("Average volume is zero or negative", symbol)
-            return False
-
-        volume_ratio = breakout_volume / average_volume
-        is_high = volume_ratio >= min_threshold
-
-        self.logger.info("=== TRUE Breakout Volume Check (Want HIGH Volume) ===", symbol)
-        self.logger.info(f"Breakout Volume: {breakout_volume}", symbol)
-        self.logger.info(f"Average Volume: {average_volume:.0f}", symbol)
-        self.logger.info(f"Volume Ratio: {volume_ratio:.2f}x", symbol)
-        self.logger.info(f"Min Threshold: {min_threshold:.2f}x", symbol)
-        self.logger.info(f"Volume is HIGH: {'YES' if is_high else 'NO'}", symbol)
-
-        if not is_high:
-            self.logger.info(">>> VOLUME TOO LOW - Weak breakout, may fail <<<", symbol)
-            self.logger.info(">>> Not ideal for true breakout strategy - skipping <<<", symbol)
-        else:
-            self.logger.info(">>> VOLUME IS HIGH - Strong breakout, likely to continue <<<", symbol)
-            self.logger.info(">>> Good candidate for true breakout - proceeding <<<", symbol)
-
-        return is_high
+        return self.volume_service.is_volume_high(
+            current_volume=breakout_volume,
+            average_volume=average_volume,
+            min_threshold=min_threshold,
+            symbol=symbol,
+            check_type=VolumeCheckType.TRUE_BREAKOUT_HIGH
+        )
 
     def is_continuation_volume_high(self, continuation_volume: int, average_volume: float,
                                    min_threshold: float, symbol: str) -> bool:
         """
         Check if continuation volume is HIGH (strong continuation = good confirmation).
+
+        Delegates to VolumeAnalysisService.
 
         Args:
             continuation_volume: Volume of continuation candle
@@ -194,28 +155,13 @@ class TechnicalIndicators:
         Returns:
             True if volume is high, False otherwise
         """
-        if average_volume <= 0:
-            self.logger.warning("Average volume is zero or negative", symbol)
-            return False
-
-        volume_ratio = continuation_volume / average_volume
-        is_high = volume_ratio >= min_threshold
-
-        self.logger.info("=== Continuation Volume Check (Want HIGH Volume) ===", symbol)
-        self.logger.info(f"Continuation Volume: {continuation_volume}", symbol)
-        self.logger.info(f"Average Volume: {average_volume:.0f}", symbol)
-        self.logger.info(f"Volume Ratio: {volume_ratio:.2f}x", symbol)
-        self.logger.info(f"Min Threshold: {min_threshold:.2f}x", symbol)
-        self.logger.info(f"Volume is HIGH: {'YES' if is_high else 'NO'}", symbol)
-
-        if not is_high:
-            self.logger.info(">>> VOLUME TOO LOW - Weak continuation, lacks momentum <<<", symbol)
-            self.logger.info(">>> May not be a strong true breakout - skipping <<<", symbol)
-        else:
-            self.logger.info(">>> VOLUME IS HIGH - Strong continuation confirmation <<<", symbol)
-            self.logger.info(">>> Excellent true breakout signal - proceeding <<<", symbol)
-
-        return is_high
+        return self.volume_service.is_volume_high(
+            current_volume=continuation_volume,
+            average_volume=average_volume,
+            min_threshold=min_threshold,
+            symbol=symbol,
+            check_type=VolumeCheckType.CONTINUATION_HIGH
+        )
     
     def detect_bullish_rsi_divergence(self, df: pd.DataFrame, rsi_period: int,
                                      lookback: int, symbol: str) -> bool:
