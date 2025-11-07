@@ -217,6 +217,7 @@ class ActiveSetManager:
             'margin',
             'market is closed',
             'market closed',
+            'retcode 10018',  # Market closed error code
             'off quotes',
             'no prices',
             'requote',

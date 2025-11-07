@@ -202,6 +202,16 @@ SYMBOL_SUFFIX_PRIORITY: Final[Dict[str, int]] = {
 
 
 # ============================================================================
+# MT5 RETCODE CONSTANTS
+# ============================================================================
+
+# MT5 Trade Server Return Codes
+RETCODE_MARKET_CLOSED: Final[int] = 10018  # Market is closed
+RETCODE_AUTOTRADING_DISABLED: Final[int] = 10026  # AutoTrading disabled by server
+RETCODE_ONLY_CLOSE_ALLOWED: Final[int] = 10044  # Only position closing allowed
+
+
+# ============================================================================
 # ERROR MESSAGES
 # ============================================================================
 

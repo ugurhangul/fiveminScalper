@@ -472,6 +472,41 @@ class MT5Connector:
             self.logger.error(f"Error checking if trading enabled for {symbol}: {e}")
             return False
 
+    def is_market_open(self, symbol: str) -> bool:
+        """
+        Check if the market is currently open for a symbol.
+
+        This checks if we can get current tick data, which indicates the market is active.
+
+        Args:
+            symbol: Symbol name
+
+        Returns:
+            True if market appears to be open, False otherwise
+        """
+        try:
+            # Try to get current tick - if market is closed, this may fail or return stale data
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return False
+
+            # Check if we can get symbol info
+            symbol_info = self.get_symbol_info(symbol)
+            if symbol_info is None:
+                return False
+
+            # Check trade mode - if it's DISABLED (0), market is not available
+            trade_mode = symbol_info.get('trade_mode', 0)
+            if trade_mode == 0:
+                return False
+
+            # If we got here, market appears to be accessible
+            return True
+
+        except Exception as e:
+            self.logger.debug(f"Error checking market status for {symbol}: {e}")
+            return False
+
     def get_market_watch_symbols(self) -> List[str]:
         """
         Get all symbols from MetaTrader's Market Watch list.

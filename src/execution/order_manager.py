@@ -23,6 +23,9 @@ from src.constants import (
     ERROR_AUTOTRADING_DISABLED,
     SUCCESS_POSITION_OPENED,
     SUCCESS_POSITION_MODIFIED,
+    RETCODE_MARKET_CLOSED,
+    RETCODE_AUTOTRADING_DISABLED,
+    RETCODE_ONLY_CLOSE_ALLOWED,
     STRATEGY_TYPE_FALSE_BREAKOUT,
     STRATEGY_TYPE_TRUE_BREAKOUT,
 )
@@ -91,7 +94,31 @@ class OrderManager:
             Normalized volume
         """
         return self.price_normalizer.normalize_volume(symbol, volume)
-    
+
+    def _check_market_reopened(self, symbol: str):
+        """
+        Check if the market has reopened after being closed.
+
+        Args:
+            symbol: Symbol to check
+        """
+        # Update the last check time
+        self.cooldown.update_market_check_time()
+
+        # Check if market is now open
+        if self.connector.is_market_open(symbol):
+            self.logger.info(
+                f"Market status check: Market appears to be open for {symbol}",
+                symbol
+            )
+            # Clear the market closed state
+            self.cooldown.clear_market_closed()
+        else:
+            self.logger.debug(
+                f"Market status check: Market still closed for {symbol}",
+                symbol
+            )
+
     def execute_signal(self, signal: TradeSignal) -> Optional[int]:
         """
         Execute a trade signal.
@@ -104,7 +131,11 @@ class OrderManager:
         """
         symbol = signal.symbol
 
-        # Check if in cooldown period
+        # Check if market was closed and if it's time to verify if it reopened
+        if self.cooldown.is_market_closed() and self.cooldown.should_check_market_status():
+            self._check_market_reopened(symbol)
+
+        # Check if in cooldown period (includes market closed state)
         if self.cooldown.is_in_cooldown():
             remaining = self.cooldown.get_remaining_time()
             if remaining:
@@ -244,22 +275,32 @@ class OrderManager:
                 return None
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
-                # Check for AutoTrading disabled by server
-                if result.retcode == 10026:
+                # Check for market closed error
+                if result.retcode == RETCODE_MARKET_CLOSED:
                     self.logger.warning(
-                        f"Trade rejected - AutoTrading disabled by server (retcode 10026)",
+                        f"Trade rejected - Market is closed (retcode {RETCODE_MARKET_CLOSED})",
+                        symbol
+                    )
+                    # Activate market closed state to pause all trading
+                    self.cooldown.activate_market_closed(symbol)
+                    return None
+
+                # Check for AutoTrading disabled by server
+                elif result.retcode == RETCODE_AUTOTRADING_DISABLED:
+                    self.logger.warning(
+                        f"Trade rejected - AutoTrading disabled by server (retcode {RETCODE_AUTOTRADING_DISABLED})",
                         symbol
                     )
                     # Activate cooldown to prevent spam
-                    self.cooldown.activate_cooldown("AutoTrading disabled by server (error 10026)")
+                    self.cooldown.activate_cooldown(f"AutoTrading disabled by server (error {RETCODE_AUTOTRADING_DISABLED})")
                     return None
 
                 # Check for "Only position closing allowed" restriction
-                elif result.retcode == 10044:
+                elif result.retcode == RETCODE_ONLY_CLOSE_ALLOWED:
                     self.logger.symbol_condition_warning(
                         symbol=symbol,
                         condition="Position Opening Restricted",
-                        details=f"Broker restriction: Only position closing allowed (retcode 10044) - {result.comment}"
+                        details=f"Broker restriction: Only position closing allowed (retcode {RETCODE_ONLY_CLOSE_ALLOWED}) - {result.comment}"
                     )
                     # This is a symbol-specific broker restriction, not a global error
                     # Don't activate cooldown, just skip this symbol for now
@@ -527,12 +568,7 @@ class OrderManager:
             "RETRY" if temporarily blocked by server (should retry later)
         """
         try:
-            # Check if in cooldown period
-            if self.cooldown.is_in_cooldown():
-                # Return RETRY to keep position in tracking
-                return "RETRY"
-
-            # Get current position
+            # Get current position first to get symbol
             position = mt5.positions_get(ticket=ticket)
             if not position or len(position) == 0:
                 self.logger.error(f"Position {ticket} not found")
@@ -540,6 +576,15 @@ class OrderManager:
 
             pos = position[0]
             symbol = pos.symbol
+
+            # Check if market was closed and if it's time to verify if it reopened
+            if self.cooldown.is_market_closed() and self.cooldown.should_check_market_status():
+                self._check_market_reopened(symbol)
+
+            # Check if in cooldown period (includes market closed state)
+            if self.cooldown.is_in_cooldown():
+                # Return RETRY to keep position in tracking
+                return "RETRY"
 
             # Use current values if not specified
             new_sl = sl if sl is not None else pos.sl
@@ -609,7 +654,16 @@ class OrderManager:
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 # Log additional context for common errors
-                if result.retcode == 10016:  # Invalid stops
+                if result.retcode == RETCODE_MARKET_CLOSED:
+                    self.logger.warning(
+                        f"Modify blocked - Market is closed (retcode {RETCODE_MARKET_CLOSED}) for position {ticket}",
+                        symbol
+                    )
+                    # Activate market closed state to pause all trading
+                    self.cooldown.activate_market_closed(symbol)
+                    # Return RETRY to keep position in tracking
+                    return "RETRY"
+                elif result.retcode == 10016:  # Invalid stops
                     self.logger.error(
                         f"Modify failed for position {ticket}: retcode={result.retcode}, "
                         f"comment='{result.comment}'",
@@ -632,13 +686,13 @@ class OrderManager:
                         f"  SL distance: {sl_distance_points:.0f} pts, TP distance: {tp_distance_points:.0f} pts",
                         symbol
                     )
-                elif result.retcode == 10026:  # AutoTrading disabled by server
+                elif result.retcode == RETCODE_AUTOTRADING_DISABLED:
                     self.logger.warning(
-                        f"Modify blocked - AutoTrading disabled by server (retcode 10026)",
+                        f"Modify blocked - AutoTrading disabled by server (retcode {RETCODE_AUTOTRADING_DISABLED})",
                         symbol
                     )
                     # Activate cooldown to prevent spam
-                    self.cooldown.activate_cooldown("AutoTrading disabled by server (error 10026)")
+                    self.cooldown.activate_cooldown(f"AutoTrading disabled by server (error {RETCODE_AUTOTRADING_DISABLED})")
                     # Return RETRY to keep position in tracking
                     return "RETRY"
                 elif result.retcode == 10027:  # Autotrading disabled by terminal
@@ -736,12 +790,23 @@ class OrderManager:
             
             # Send close order
             result = mt5.order_send(request)
-            
+
             if result is None:
                 self.logger.error(f"Close failed for position {ticket}, no result")
                 return False
-            
+
             if result.retcode != mt5.TRADE_RETCODE_DONE:
+                # Check for market closed error
+                if result.retcode == RETCODE_MARKET_CLOSED:
+                    self.logger.warning(
+                        f"Close blocked - Market is closed (retcode {RETCODE_MARKET_CLOSED}) for position {ticket}",
+                        symbol
+                    )
+                    # Activate market closed state to pause all trading
+                    self.cooldown.activate_market_closed(symbol)
+                    return False
+
+                # Other errors
                 self.logger.error(
                     f"Close failed for position {ticket}: {result.retcode} - {result.comment}"
                 )
